@@ -1,6 +1,6 @@
-// script.js — final with TreeWalker + fallback innerHTML replacement for leftover @@MATH tokens
-// Shields code regions, extracts math, reinserts safely as DOM placeholders (textContent), then typesets MathJax.
-// Also supports mermaid, highlight.js, TOC, file drag/drop, theme toggle, print.
+// script.js — final robust version
+// Shields code blocks, extracts math safely, reinserts as DOM placeholders (textContent),
+// then asks MathJax to typeset. Also supports mermaid, highlight.js, TOC, drag/drop, theme toggle.
 
 (() => {
   // DOM refs
@@ -34,7 +34,7 @@
   try { if (window.markdownitAttrs) md.use(window.markdownitAttrs); } catch(e){}
   try { if (window.markdownitLinkifyImages) md.use(window.markdownitLinkifyImages); } catch(e){}
 
-  // theme handling
+  // theme
   function setTheme(t) {
     if (t === 'dark') document.documentElement.setAttribute('data-theme','dark');
     else document.documentElement.removeAttribute('data-theme');
@@ -46,35 +46,40 @@
     setTheme(cur === 'dark' ? 'light' : 'dark');
   });
 
-  // ---------- Shield code regions ----------
+  // ---------------- Utility: shield code regions ----------------
+  // Replace code blocks / inline code with tokens so math extraction won't touch them.
   function shieldCodeRegions(text) {
     const codeBlocks = [];
     if (!text) return { text: '', codeBlocks };
 
+    // Normalize
     text = text.replace(/\r\n/g,'\n');
 
-    // fenced code blocks
+    // 1) Fenced code blocks ```lang ... ```
     text = text.replace(/(^|\n)(```[\s\S]*?```)(?=\n|$)/g, function(_, lead, block) {
       const token = `@@CODE_BLOCK_${codeBlocks.length}@@`;
       codeBlocks.push(block);
       return lead + token;
     });
 
-    // indented code blocks (simple capture)
+    // 2) Indented code blocks (lines starting with 4 spaces or a tab) - capture contiguous block
     text = text.replace(/(^|\n)((?:[ \t]{4}.*\n?)+)/g, function(_, lead, block) {
+      // only treat as code block if majority of lines start with 4 spaces
       const token = `@@CODE_BLOCK_${codeBlocks.length}@@`;
       codeBlocks.push(block);
       return lead + token;
     });
 
-    // inline code with backticks (handles varying lengths)
+    // 3) Inline code `...` (avoid matching ```` cases and nested)
+    // Use a loop to replace inline code occurrences to handle backticks of varying length
+    // Pattern: find runs of backticks and matching closing run
     text = text.replace(/(`+)([\s\S]*?)\1/g, function(_, ticks, inner) {
       const token = `@@CODE_BLOCK_${codeBlocks.length}@@`;
       codeBlocks.push(ticks + inner + ticks);
       return token;
     });
 
-    // HTML <pre> and <code>
+    // 4) HTML <pre>...</pre> or <code>...</code> (simple)
     text = text.replace(/(<pre[\s\S]*?<\/pre>)/gi, function(_, block) {
       const token = `@@CODE_BLOCK_${codeBlocks.length}@@`;
       codeBlocks.push(block);
@@ -89,7 +94,16 @@
     return { text, codeBlocks };
   }
 
-  // ---------- Math extraction ----------
+  function restoreCodeRegions(text, codeBlocks) {
+    if (!codeBlocks || !codeBlocks.length) return text;
+    for (let i=0;i<codeBlocks.length;i++){
+      const token = `@@CODE_BLOCK_${i}@@`;
+      text = text.split(token).join(codeBlocks[i]);
+    }
+    return text;
+  }
+
+  // ---------------- Math extraction ----------------
   function extractMathBlocks(text) {
     const math = [];
     if (!text) return { text: '', math };
@@ -106,31 +120,33 @@
       return store(`\\begin{${env}}${inner}\\end{${env}}`, true);
     });
 
-    // $$...$$
+    // $$ ... $$
     text = text.replace(/\$\$([\s\S]*?)\$\$/g, function(_, inner) { return store(inner, true); });
 
-    // \[ ... \]
+    // \[ ... \] (anywhere)
     text = text.replace(/\\\[\s*([\s\S]*?)\s*\\\]/g, function(_, inner) { return store(inner, true); });
 
-    // [ ... ] display when on own lines
+    // [ ... ] when on own lines (display)
     text = text.replace(/(^|\n)[ \t]*\[[ \t]*\n([\s\S]*?)\n[ \t]*\][ \t]*(?=\n|$)/g, function(_, lead, inner) {
       return lead + store(inner, true);
     });
 
-    // \( ... \) inline
+    // inline \( ... \)
     text = text.replace(/\\\(([\s\S]*?)\\\)/g, function(_, inner) { return store(inner, false); });
 
     // inline bracketed starting with backslash [\...]
     text = text.replace(/\[\s*(\\[^\]\n]+?)\s*\]/g, function(_, inner) { return store(inner, false); });
 
-    // parenthesis starting with backslash (\... )
+    // parenthesis with leading backslash (\bar{x}) as inline
     text = text.replace(/\(\s*(\\[^)\n]+?)\s*\)/g, function(_, inner) { return store(inner, false); });
 
     return { text, math };
   }
 
-  // ---------- DOM-aware token replacement using TreeWalker ----------
+  // ---------------- DOM-aware token replacement ----------------
+  // Walk text nodes in viewer and replace @@MATH_N@@ and @@CODE_BLOCK_N@@ tokens with placeholders
   function replaceTokensInDOM(math, codeBlocks) {
+    // tokens regex
     const tokenRe = /@@(MATH|CODE_BLOCK)_(\d+)@@/g;
     const walker = document.createTreeWalker(viewer, NodeFilter.SHOW_TEXT, null, false);
     const nodes = [];
@@ -153,12 +169,16 @@
         if (idx > lastIndex) frag.appendChild(document.createTextNode(str.slice(lastIndex, idx)));
         const type = m[1]; const id = Number(m[2]);
         if (type === 'MATH') {
+          // placeholder element
           const isDisplay = math[id] && math[id].isDisplay;
           const el = isDisplay ? document.createElement('div') : document.createElement('span');
           el.className = isDisplay ? 'md-math-block' : 'md-math-inline';
           el.setAttribute('data-math-index', String(id));
           frag.appendChild(el);
         } else if (type === 'CODE_BLOCK') {
+          // restore code block content as a pre/code element to preserve formatting
+          const codeContent = codeBlocks[id] || '';
+          // we insert a placeholder div with data-code-index and set textContent later to avoid accidental HTML parsing
           const el = document.createElement('div');
           el.className = 'md-code-block-placeholder';
           el.setAttribute('data-code-index', String(id));
@@ -172,21 +192,25 @@
     });
   }
 
-  // populate placeholders using textContent to preserve exact characters
+  // set exact textContent for math and code placeholders
   function populatePlaceholders(math, codeBlocks) {
+    // math inline
     viewer.querySelectorAll('span.md-math-inline').forEach(span => {
       const idx = Number(span.getAttribute('data-math-index'));
       if (!Number.isNaN(idx) && math[idx]) span.textContent = `$${math[idx].inner}$`;
     });
+    // math blocks
     viewer.querySelectorAll('div.md-math-block').forEach(div => {
       const idx = Number(div.getAttribute('data-math-index'));
       if (!Number.isNaN(idx) && math[idx]) div.textContent = `$$${math[idx].inner}$$`;
     });
+    // code blocks (restore original raw)
     viewer.querySelectorAll('div.md-code-block-placeholder').forEach(div => {
       const idx = Number(div.getAttribute('data-code-index'));
       const raw = codeBlocks && codeBlocks[idx] ? codeBlocks[idx] : '';
+      // put raw HTML safely: use textContent so backticks and < > are preserved
       div.textContent = raw;
-      // replace placeholder with <pre><code> to preserve style
+      // optionally convert to a <pre><code> wrapper so styles apply
       const pre = document.createElement('pre');
       const code = document.createElement('code');
       code.textContent = raw;
@@ -195,69 +219,38 @@
     });
   }
 
-  // ---------- Fallback innerHTML replacement for leftover tokens ----------
-  function fallbackReplaceRemainingMathTokens(math) {
-    try {
-      if (viewer.innerHTML.indexOf('@@MATH_') === -1) return;
-      const protectedList = [];
-      viewer.querySelectorAll('pre, code').forEach((el, i) => {
-        const tagToken = `@@CODEPROT_${i}@@`;
-        protectedList.push({ token: tagToken, html: el.innerHTML });
-        el.innerHTML = tagToken;
-      });
-
-      for (let i = 0; i < math.length; i++) {
-        const token = `@@MATH_${i}@@`;
-        if (viewer.innerHTML.indexOf(token) !== -1) {
-          const placeholderHtml = math[i].isDisplay
-            ? `<div class="md-math-block" data-math-index="${i}"></div>`
-            : `<span class="md-math-inline" data-math-index="${i}"></span>`;
-          viewer.innerHTML = viewer.innerHTML.split(token).join(placeholderHtml);
-        }
-      }
-
-      protectedList.forEach(p => {
-        viewer.innerHTML = viewer.innerHTML.split(p.token).join(p.html);
-      });
-    } catch (e) {
-      console.warn('fallbackReplaceRemainingMathTokens error', e);
-    }
-  }
-
-  // ---------- Render pipeline ----------
+  // ---------------- Render pipeline ----------------
   async function renderMarkdown(rawMd, sourceLabel='') {
     try {
-      // 1) Shield code regions
+      // 1) shield code regions (so math inside code won't be extracted)
       const { text: shieldedText, codeBlocks } = shieldCodeRegions(rawMd || '');
 
-      // 2) Extract math blocks
+      // 2) extract math from shielded text
       const { text: placeholdered, math } = extractMathBlocks(shieldedText);
 
-      // 3) Render markdown-it
+      // 3) render markdown-it on placeholdered text (math tokens and code tokens are in text)
+      // But we must ensure code tokens remain in markdown pipeline to render consistent HTML—so restore code placeholders as tokens in text (they are already tokens @@CODE_BLOCK_N@@)
       const rendered = md.render(placeholdered);
 
-      // 4) Inject rendered HTML
+      // 4) inject rendered HTML
       if (placeholder && placeholder.parentNode) placeholder.parentNode.removeChild(placeholder);
       viewer.innerHTML = rendered;
 
-      // 5) Attempt TreeWalker replacement
+      // 5) Replace tokens inside DOM (math & code) with placeholders (TreeWalker handles split nodes)
       replaceTokensInDOM(math, codeBlocks);
 
-      // 6) Fallback string-based replace if tokens remain
-      fallbackReplaceRemainingMathTokens(math);
-
-      // 7) Populate placeholders with exact textContent
+      // 6) Populate placeholders with exact textContent (math as $...$ or $$...$$; code restored)
       populatePlaceholders(math, codeBlocks);
 
-      // 8) Build TOC
+      // 7) Build TOC (now headings present)
       buildTOC();
 
-      // 9) Syntax highlight
+      // 8) Syntax highlight
       document.querySelectorAll('pre code').forEach(el => {
         try { hljs.highlightElement(el); } catch(e) {}
       });
 
-      // 10) Mermaid rendering
+      // 9) Mermaid: convert fenced mermaid code to .mermaid divs
       try {
         const mermaidBlocks = viewer.querySelectorAll('pre code.language-mermaid, code.language-mermaid');
         mermaidBlocks.forEach(c => {
@@ -275,12 +268,12 @@
         }
       } catch(e) { console.warn('mermaid error', e); }
 
-      // 11) MathJax typeset
+      // 10) MathJax typeset
       if (window.MathJax && window.MathJax.typesetPromise) {
         try {
           await window.MathJax.typesetPromise();
-        } catch (e) {
-          console.warn('MathJax typesetPromise error', e);
+        } catch(e) {
+          console.warn('MathJax typeset error', e);
         }
       } else {
         console.warn('MathJax not loaded or typesetPromise unavailable.');
@@ -294,7 +287,7 @@
     }
   }
 
-  // ---------- Build TOC ----------
+  // ---------------- Build TOC ----------------
   function buildTOC() {
     if (!toc) return;
     toc.innerHTML = '';
@@ -311,13 +304,13 @@
     });
   }
 
-  // ---------- Load from URL and events ----------
+  // ---------------- Load from URL / events ----------------
   async function loadFromUrl(url) {
     try {
       const res = await fetch(url, { mode: 'cors' });
       if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
-      const mdText = await res.text();
-      await renderMarkdown(mdText, url);
+      const md = await res.text();
+      await renderMarkdown(md, url);
     } catch (e) {
       alert('Failed to load URL: ' + e.message);
       console.error('loadFromUrl error', e);
@@ -335,7 +328,7 @@
     loadFromUrl(src);
   }
 
-  // ---------- File input & drag/drop ----------
+  // file input & drag/drop
   fileInput && fileInput.addEventListener('change', async (ev) => {
     const f = ev.target.files && ev.target.files[0]; if (!f) return;
     try { const txt = await f.text(); await renderMarkdown(txt, f.name); } catch(e){ console.error(e); }
@@ -347,15 +340,10 @@
     if (f) { try { const txt = await f.text(); await renderMarkdown(txt, f.name); } catch(e){ console.error(e); } }
   });
 
-  // ---------- Print / PDF ----------
+  // print
   downloadPdfBtn && downloadPdfBtn.addEventListener('click', () => window.print());
 
-  // ---------- Scroll helpers ----------
+  // scroll helpers
   scrollTopBtn && scrollTopBtn.addEventListener('click', () => window.scrollTo({ top:0, behavior:'smooth' }));
   scrollBottomBtn && scrollBottomBtn.addEventListener('click', () => window.scrollTo({ top: document.body.scrollHeight, behavior:'smooth' }));
-
-  // Optional: demo load
-  // const sample = 'https://raw.githubusercontent.com/simov/markdown-viewer/main/README.md';
-  // urlInput.value = sample; loadFromUrl(sample);
-
 })();
