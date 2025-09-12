@@ -1,6 +1,8 @@
-// script.js
-// Safe math extraction + markdown rendering + MathJax + Mermaid + highlight.js + TOC + drag/drop
-// Replace your existing script.js with this file.
+// script.js — final, corrected version
+// - Extract math blocks before markdown-it to preserve LaTeX exactly
+// - Reinsert math as DOM placeholders and set textContent to avoid HTML mangling
+// - Works with: $$..$$, \[..\], [..] (display), \(..\), (\..), [\..] (inline), \begin{env}...\end{env}
+// - Also handles mermaid, highlight.js, TOC, file open/drag-drop, theme toggle, print
 
 (() => {
   // --- DOM refs ---
@@ -23,18 +25,18 @@
     breaks: true
   });
 
-  // optional plugins (graceful)
-  try { if (window.markdownitEmoji) md.use(window.markdownitEmoji); } catch {}
-  try { if (window.markdownitDeflist) md.use(window.markdownitDeflist); } catch {}
-  try { if (window.markdownitFootnote) md.use(window.markdownitFootnote); } catch {}
-  try { if (window.markdownitMark) md.use(window.markdownitMark); } catch {}
-  try { if (window.markdownitSub) md.use(window.markdownitSub); } catch {}
-  try { if (window.markdownitSup) md.use(window.markdownitSup); } catch {}
-  try { if (window.markdownitTaskLists) md.use(window.markdownitTaskLists, { enabled: true }); } catch {}
-  try { if (window.markdownitAttrs) md.use(window.markdownitAttrs); } catch {}
-  try { if (window.markdownitLinkifyImages) md.use(window.markdownitLinkifyImages); } catch {}
+  // Optional plugin registration (graceful fallback if not loaded)
+  try { if (window.markdownitEmoji) md.use(window.markdownitEmoji); } catch (e) {}
+  try { if (window.markdownitDeflist) md.use(window.markdownitDeflist); } catch (e) {}
+  try { if (window.markdownitFootnote) md.use(window.markdownitFootnote); } catch (e) {}
+  try { if (window.markdownitMark) md.use(window.markdownitMark); } catch (e) {}
+  try { if (window.markdownitSub) md.use(window.markdownitSub); } catch (e) {}
+  try { if (window.markdownitSup) md.use(window.markdownitSup); } catch (e) {}
+  try { if (window.markdownitTaskLists) md.use(window.markdownitTaskLists, { enabled: true }); } catch (e) {}
+  try { if (window.markdownitAttrs) md.use(window.markdownitAttrs); } catch (e) {}
+  try { if (window.markdownitLinkifyImages) md.use(window.markdownitLinkifyImages); } catch (e) {}
 
-  // --- theme toggle ---
+  // --- Theme handling ---
   function setTheme(t) {
     if (t === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
     else document.documentElement.removeAttribute('data-theme');
@@ -46,105 +48,148 @@
     setTheme(current === 'dark' ? 'light' : 'dark');
   });
 
-  // ---------------- Math extraction & reinsertion ----------------
-  // Extract math segments and replace with placeholders BEFORE markdown-it runs.
-  function extractMathBlocks(text) {
-    let math = [];
-    let i = 0;
+  // ---------------- Math extraction & reinsertion helpers ----------------
 
-    // helper to create a token and store math content (inner, display flag)
-    function add(inner, isDisplay) {
+  /**
+   * Extract math blocks and replace with placeholders.
+   * Returns { text: stringWithPlaceholders, math: [{inner, isDisplay}, ...] }
+   */
+  function extractMathBlocks(text) {
+    const math = [];
+    if (!text) return { text: '', math };
+
+    // Normalize line endings
+    text = text.replace(/\r\n/g, '\n');
+
+    // Helper to store math and return token
+    function store(inner, isDisplay) {
       const token = `@@MATH_${math.length}@@`;
-      math.push({ inner, isDisplay });
+      math.push({ inner, isDisplay: !!isDisplay });
       return token;
     }
 
-    if (!text) return { text: '', math };
-
-    // normalize CRLF
-    text = text.replace(/\r\n/g, '\n');
-
-    // 0) Preserve \begin{...}...\end{...} (treat as display)
-    text = text.replace(/\\begin\{([^\}]+)\}([\s\S]*?)\\end\{\1\}/g, function(_, env, inner) {
-      return add(`\\begin{${env}}${inner}\\end{${env}}`, true);
+    // 0) Protect \begin{env}...\end{env} (treat as display)
+    // Use a loop to capture nested same env occurrences properly
+    text = text.replace(/\\begin\{([a-zA-Z*0-9_-]+)\}([\s\S]*?)\\end\{\1\}/g, function(_, env, inner) {
+      return store(`\\begin{${env}}${inner}\\end{${env}}`, true);
     });
 
     // 1) $$ ... $$ (display)
     text = text.replace(/\$\$([\s\S]*?)\$\$/g, function(_, inner) {
-      return add(inner, true);
+      return store(inner, true);
     });
 
-    // 2) \[ ... \] (backslash-square) (display) — multi-line or single-line
+    // 2) \[ ... \] (display) - multi or single line
     text = text.replace(/\\\[\s*([\s\S]*?)\s*\\\]/g, function(_, inner) {
-      return add(inner, true);
+      return store(inner, true);
     });
 
-    // 3) [ ... ] when they are on their own lines (display)
-    // require newline before and after (or start/end) to avoid list/array false-positives
-    text = text.replace(/(^|\n)[ \t]*\[[ \t]*\n([\s\S]*?)\n[ \t]*\][ \t]*(?=\n|$)/g, function(_, lead, inner) {
-      return lead + add(inner, true);
+    // 3) [ ... ] as display when on its own lines:
+    // require that the opening '[' is at start of line (allow spaces) and closing ']' at line end
+    text = text.replace(/(^|\n)[ \t]*\[[ \t]*\n([\s\S]*?)\n[ \t]*\][ \t]*(?=\n|$)/g, function(m, lead, inner) {
+      return lead + store(inner, true);
     });
 
-    // 4) Inline \(...\) standard TeX inline (preserve as inline)
+    // 4) \(...\) inline standard TeX
     text = text.replace(/\\\(([\s\S]*?)\\\)/g, function(_, inner) {
-      return add(inner, false);
+      return store(inner, false);
     });
 
-    // 5) Inline bracketed LaTeX that starts with backslash: [\frac{...}] etc. -> inline
+    // 5) Inline bracketed LaTeX starting with backslash: [\alpha], [\frac{..}] -> inline
     text = text.replace(/\[\s*(\\[^\]\n]+?)\s*\]/g, function(_, inner) {
-      return add(inner, false);
+      return store(inner, false);
     });
 
-    // 6) Parenthesis inline where '(' immediately followed by backslash: (\bar{x}...)
+    // 6) Parenthesis-wrapped inline LaTeX when '(' immediately followed by backslash:
+    //    (\bar{x} = ...)
     text = text.replace(/\(\s*(\\[^)\n]+?)\s*\)/g, function(_, inner) {
-      return add(inner, false);
+      return store(inner, false);
     });
 
-    // After all replacements, return text and math array
+    // Return placeholdered text and math array
     return { text, math };
   }
 
-  // Reinsert math placeholders into rendered HTML string (before MathJax runs)
-  function reinsertMathIntoHtml(htmlString, math) {
+  /**
+   * Reinsert placeholders into HTML string as DOM placeholders:
+   * - display -> <div class="md-math-block" data-math-index="i"></div>
+   * - inline  -> <span class="md-math-inline" data-math-index="i"></span>
+   *
+   * This avoids inserting raw $...$ into HTML where parsing could mangle backslashes.
+   */
+  function reinsertMathIntoHtmlSafely(htmlString, math) {
     if (!math || !math.length) return htmlString;
-    // Replace tokens with preserved math delimiters
-    // Do a global replace for each token
     for (let i = 0; i < math.length; i++) {
       const token = `@@MATH_${i}@@`;
-      const content = math[i].isDisplay ? `$$${math[i].inner}$$` : `$${math[i].inner}$`;
-      // use split/join to replace all occurrences safely
-      htmlString = htmlString.split(token).join(content);
+      const placeholder = math[i].isDisplay
+        ? `<div class="md-math-block" data-math-index="${i}"></div>`
+        : `<span class="md-math-inline" data-math-index="${i}"></span>`;
+      htmlString = htmlString.split(token).join(placeholder);
     }
     return htmlString;
+  }
+
+  /**
+   * Populate the DOM placeholders with exact math text using textContent (preserves backslashes).
+   * This must be called after viewer.innerHTML is set but before MathJax typesetting.
+   */
+  function populateMathPlaceholders(math) {
+    if (!math || !math.length) return;
+    try {
+      // Inline spans
+      const inlines = viewer.querySelectorAll('span.md-math-inline');
+      inlines.forEach(span => {
+        const idx = Number(span.getAttribute('data-math-index'));
+        if (!Number.isNaN(idx) && math[idx]) {
+          const item = math[idx];
+          span.textContent = `$${item.inner}$`;
+        }
+      });
+
+      // Block divs
+      const blocks = viewer.querySelectorAll('div.md-math-block');
+      blocks.forEach(div => {
+        const idx = Number(div.getAttribute('data-math-index'));
+        if (!Number.isNaN(idx) && math[idx]) {
+          const item = math[idx];
+          div.textContent = `$$${item.inner}$$`;
+        }
+      });
+    } catch (e) {
+      console.warn('populateMathPlaceholders error', e);
+    }
   }
 
   // ---------------- Render pipeline ----------------
   async function renderMarkdown(rawMarkdownText, sourceLabel = '') {
     try {
-      // 1) Extract math blocks -> placeholders
-      const { text: withPlaceholders, math } = extractMathBlocks(rawMarkdownText);
+      // 1) Extract math -> placeholders
+      const { text: withPlaceholders, math } = extractMathBlocks(rawMarkdownText || '');
 
-      // 2) Remove placeholder UI if present
+      // 2) Remove UI placeholder if present
       if (placeholder && placeholder.parentNode) placeholder.parentNode.removeChild(placeholder);
 
-      // 3) Render markdown (markdown-it) with placeholders - markdown-it cannot mangle math now
-      const rendered = md.render(withPlaceholders);
+      // 3) Render markdown-it on the placeholdered text
+      const renderedHtml = md.render(withPlaceholders);
 
-      // 4) Reinsert math strings into the HTML string
-      const finalHtml = reinsertMathIntoHtml(rendered, math);
+      // 4) Replace tokens with DOM placeholders to avoid HTML parsing issues
+      const safeHtml = reinsertMathIntoHtmlSafely(renderedHtml, math);
 
-      // 5) Inject HTML into viewer
-      viewer.innerHTML = finalHtml;
+      // 5) Inject into viewer
+      viewer.innerHTML = safeHtml;
 
-      // 6) Build TOC
+      // 6) Populate placeholders' textContent with exact math strings
+      populateMathPlaceholders(math);
+
+      // 7) Build TOC (headings now exist)
       buildTOC();
 
-      // 7) Syntax highlight
+      // 8) Syntax highlight
       document.querySelectorAll('pre code').forEach(el => {
         try { hljs.highlightElement(el); } catch (e) {}
       });
 
-      // 8) Mermaid: convert mermaid codeblocks into .mermaid containers then init
+      // 9) Mermaid rendering: replace mermaid code blocks with divs and init
       try {
         const mermaidBlocks = viewer.querySelectorAll('pre code.language-mermaid, code.language-mermaid');
         mermaidBlocks.forEach(c => {
@@ -164,7 +209,7 @@
         console.warn('mermaid rendering failed', e);
       }
 
-      // 9) Ask MathJax to typeset the page (await it)
+      // 10) Finally, typeset math with MathJax
       if (window.MathJax && window.MathJax.typesetPromise) {
         try {
           await window.MathJax.typesetPromise();
@@ -175,7 +220,7 @@
         console.warn('MathJax not loaded or typesetPromise unavailable.');
       }
 
-      // focus and title
+      // Focus for keyboard scrolling; update title
       viewer.focus();
       if (sourceLabel) document.title = `${sourceLabel} — Markdown Viewer`;
     } catch (err) {
@@ -222,12 +267,13 @@
       console.error('loadFromUrl error', e);
     }
   }
+
   loadUrlBtn && loadUrlBtn.addEventListener('click', () => {
     const u = urlInput && urlInput.value && urlInput.value.trim();
     if (u) loadFromUrl(u);
   });
 
-  // auto-load ?src=...
+  // auto-load from ?src=
   const params = new URLSearchParams(location.search);
   if (params.get('src')) {
     const src = params.get('src');
@@ -246,6 +292,7 @@
       console.error('file read error', e);
     }
   });
+
   ['dragenter','dragover'].forEach(evt => {
     window.addEventListener(evt, (e) => { e.preventDefault(); e.stopPropagation(); });
   });
@@ -269,7 +316,7 @@
   scrollTopBtn && scrollTopBtn.addEventListener('click', () => window.scrollTo({ top: 0, behavior: 'smooth' }));
   scrollBottomBtn && scrollBottomBtn.addEventListener('click', () => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }));
 
-  // --- Optional demo load (commented) ---
+  // Optional: demo initial load (commented)
   // const sample = 'https://raw.githubusercontent.com/simov/markdown-viewer/main/README.md';
   // urlInput.value = sample; loadFromUrl(sample);
 
