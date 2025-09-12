@@ -53,59 +53,66 @@
   //   (\... )     -> $ ... $
   // Leaves existing $$...$$ and \(..\) untouched.
   function preprocessMath(markdownText) {
-    let text = markdownText || '';
+    let text = (markdownText || '');
 
-    // Normalize CRLF -> LF
+    // Normalize line endings
     text = text.replace(/\r\n/g, '\n');
 
-    // 1) Convert \[ ... \] display blocks (backslash square delimiters on their own lines)
-    //    Matches lines like:
-    //      \[
-    //      ...latex...
-    //      \]
-    //    or with optional surrounding spaces.
+    // 0) Quick unescape: convert sequences like "\\[" (literal backslash escaped) into "\["
+    // This makes later regexes simpler. We replace double-backslash before [ and ] with single backslash.
+    // Only do this when backslash is directly before bracket.
+    text = text.replace(/\\\\\[/g, '\\['); // \\\[ -> \[
+    text = text.replace(/\\\\\]/g, '\\]'); // \\\] -> \]
+
+    // 1) HANDLE backslash-square display blocks: \[ ... \]
+    // Match \[ on its own line (allow spaces) then content then \] on its own line.
+    // Also tolerate multiple backslashes (e.g. "\\[") because we pre-unescaped above.
     text = text.replace(/(^|\n)[ \t]*\\\[[ \t]*\n([\s\S]*?)\n[ \t]*\\\][ \t]*(?=\n|$)/g, function(_, lead, inner) {
-      inner = inner.replace(/^\s+|\s+$/g, ''); // trim
-      return `\n\n$$\n${inner}\n$$\n\n`;
+        inner = inner.replace(/^\s+|\s+$/g, '');
+        return `\n\n$$\n${inner}\n$$\n\n`;
     });
 
-    // 2) Convert [ ... ] display blocks (square brackets on their own lines)
-    //    Matches:
-    //      [
-    //      ...latex...
-    //      ]
-    //    but avoid touching inline arrays/lists by requiring newline boundaries.
+    // 2) HANDLE backslash-square inline on same line: \[ ... \]
+    // e.g. "Before \[ \frac{a}{b} \] After" -> convert to display math
+    text = text.replace(/\\\[\s*([\s\S]*?)\s*\\\]/g, function(_, inner) {
+        // If inner contains newlines, treat as display; else still make display to match ChatGPT rendering
+        inner = inner.replace(/^\s+|\s+$/g, '');
+        return `\n\n$$\n${inner}\n$$\n\n`;
+    });
+
+    // 3) HANDLE square-bracket display blocks [ ... ] (literal bracket on its own lines)
     text = text.replace(/(^|\n)[ \t]*\[[ \t]*\n([\s\S]*?)\n[ \t]*\][ \t]*(?=\n|$)/g, function(_, lead, inner) {
-      inner = inner.replace(/^\s+|\s+$/g, '');
-      return `\n\n$$\n${inner}\n$$\n\n`;
+        inner = inner.replace(/^\s+|\s+$/g, '');
+        return `\n\n$$\n${inner}\n$$\n\n`;
     });
 
-    // 3) Convert inline bracketed LaTeX: [\frac{...}] -> $ \frac{...} $
-    //    This regex finds [\ ... ] where content starts with backslash (LaTeX).
-    text = text.replace(/\[\s*(\\(?:[^]\r\n]|\\\]|\\\r|\n)+?)\s*\]/g, function(_, inner) {
-      inner = inner.replace(/^\s+|\s+$/g, '');
-      return `$${inner}$`;
+    // 4) Inline bracketed LaTeX starting with backslash: [\frac{...}] or [\alpha]
+    // Convert to inline math $...$
+    text = text.replace(/\[\s*(\\(?:[^\]\r\n]|\\\]|\\\r|\n)+?)\s*\]/g, function(_, inner) {
+        inner = inner.replace(/^\s+|\s+$/g, '');
+        return `$${inner}$`;
     });
 
-    // 4) Convert parenthesis inline LaTeX when '(' immediately followed by backslash:
-    //    (\bar{x} = 75{,}000)  -> $ \bar{x} = 75{,}000 $
+    // 5) Parenthesis-wrapped inline LaTeX when '(' immediately followed by backslash:
+    // (\bar{x} = 75{,}000) -> $ \bar{x} = 75{,}000 $
     text = text.replace(/\(\s*(\\(?:[^)\r\n]|\\\)|\\\r|\n)+?)\s*\)/g, function(_, inner) {
-      inner = inner.replace(/^\s+|\s+$/g, '');
-      return `$${inner}$`;
+        inner = inner.replace(/^\s+|\s+$/g, '');
+        return `$${inner}$`;
     });
 
-    // 5) Collapse many blank lines for cleanliness
+    // 6) Collapse many blank lines for cleaner HTML
     text = text.replace(/\n{3,}/g, '\n\n');
 
-    // Debug: small sample so you can inspect in DevTools Console if needed
+    // Debug: show a small sample in console so you can verify conversion
     try {
-      if (typeof console !== 'undefined' && console.debug) {
-        console.debug('preprocessMath sample (first 600 chars):\n', text.slice(0, 600));
-      }
-    } catch (e) {}
+        if (console && console.debug) {
+        console.debug('preprocessMath sample >>>', text.slice(0, 800).replace(/\n/g, '\\n'));
+        }
+    } catch(e){}
 
     return text;
-  }
+    }
+
 
   // ---------------- Render pipeline ----------------
   async function renderMarkdown(markdownText, sourceLabel = '') {
