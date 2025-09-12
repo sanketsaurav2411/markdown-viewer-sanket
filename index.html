@@ -16,24 +16,18 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.4.0/mermaid.min.js"></script>
 
   <!-- MathJax (v3) -->
-    <script>
+  <script>
     window.MathJax = {
-    tex: {
+      tex: {
         inlineMath: [['$','$'], ['\\(','\\)']],
         displayMath: [['$$','$$'], ['\\[','\\]']],
-        packages: {'[+]': ['ams']},
-    },
-    options: {
-        skipHtmlTags: ['script','noscript','style','textarea','pre','code']
-    },
-    svg: { fontCache: 'global' },
-    startup: {
-        pageReady: () => { return Promise.resolve(); } // we'll call typesetPromise manually
-    }
+        packages: {'[+]': ['ams']}
+      },
+      options: { skipHtmlTags: ['script','noscript','style','textarea','pre'] },
+      svg: { fontCache: 'global' }
     };
-    </script>
-    <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
-
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js" id="MathJax-script" async></script>
 
   <!-- markdown-it core + plugins from CDN (unpkg) -->
   <script src="https://unpkg.com/markdown-it/dist/markdown-it.min.js"></script>
