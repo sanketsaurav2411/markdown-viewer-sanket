@@ -1,6 +1,5 @@
-// script.js
-// Safe math extraction + markdown rendering + MathJax + Mermaid + highlight.js + TOC + drag/drop
-// Replace your existing script.js with this file.
+// script.js (fixed: better handling for \[ ... \] and [ ... ] display math blocks)
+// Replace existing script.js with this file and push to GitHub Pages.
 
 (() => {
   // --- DOM refs ---
@@ -23,7 +22,7 @@
     breaks: true
   });
 
-  // optional plugins (graceful)
+  // register plugins (if available)
   try { if (window.markdownitEmoji) md.use(window.markdownitEmoji); } catch {}
   try { if (window.markdownitDeflist) md.use(window.markdownitDeflist); } catch {}
   try { if (window.markdownitFootnote) md.use(window.markdownitFootnote); } catch {}
@@ -46,105 +45,97 @@
     setTheme(current === 'dark' ? 'light' : 'dark');
   });
 
-  // ---------------- Math extraction & reinsertion ----------------
-  // Extract math segments and replace with placeholders BEFORE markdown-it runs.
-  function extractMathBlocks(text) {
-    let math = [];
-    let i = 0;
+  // ---------------- Improved math preprocessing ----------------
+  // Converts:
+  //   \[ ... \]   -> $$ ... $$
+  //   [ ... ]     -> $$ ... $$
+  //   [\... ]     -> $ ... $
+  //   (\... )     -> $ ... $
+  // Leaves existing $$...$$ and \(..\) untouched.
+  function preprocessMath(markdownText) {
+    let text = (markdownText || '');
 
-    // helper to create a token and store math content (inner, display flag)
-    function add(inner, isDisplay) {
-      const token = `@@MATH_${math.length}@@`;
-      math.push({ inner, isDisplay });
-      return token;
-    }
-
-    if (!text) return { text: '', math };
-
-    // normalize CRLF
+    // Normalize line endings
     text = text.replace(/\r\n/g, '\n');
 
-    // 0) Preserve \begin{...}...\end{...} (treat as display)
-    text = text.replace(/\\begin\{([^\}]+)\}([\s\S]*?)\\end\{\1\}/g, function(_, env, inner) {
-      return add(`\\begin{${env}}${inner}\\end{${env}}`, true);
+    // 0) Quick unescape: convert sequences like "\\[" (literal backslash escaped) into "\["
+    // This makes later regexes simpler. We replace double-backslash before [ and ] with single backslash.
+    // Only do this when backslash is directly before bracket.
+    text = text.replace(/\\\\\[/g, '\\['); // \\\[ -> \[
+    text = text.replace(/\\\\\]/g, '\\]'); // \\\] -> \]
+
+    // 1) HANDLE backslash-square display blocks: \[ ... \]
+    // Match \[ on its own line (allow spaces) then content then \] on its own line.
+    // Also tolerate multiple backslashes (e.g. "\\[") because we pre-unescaped above.
+    text = text.replace(/(^|\n)[ \t]*\\\[[ \t]*\n([\s\S]*?)\n[ \t]*\\\][ \t]*(?=\n|$)/g, function(_, lead, inner) {
+        inner = inner.replace(/^\s+|\s+$/g, '');
+        return `\n\n$$\n${inner}\n$$\n\n`;
     });
 
-    // 1) $$ ... $$ (display)
-    text = text.replace(/\$\$([\s\S]*?)\$\$/g, function(_, inner) {
-      return add(inner, true);
-    });
-
-    // 2) \[ ... \] (backslash-square) (display) — multi-line or single-line
+    // 2) HANDLE backslash-square inline on same line: \[ ... \]
+    // e.g. "Before \[ \frac{a}{b} \] After" -> convert to display math
     text = text.replace(/\\\[\s*([\s\S]*?)\s*\\\]/g, function(_, inner) {
-      return add(inner, true);
+        // If inner contains newlines, treat as display; else still make display to match ChatGPT rendering
+        inner = inner.replace(/^\s+|\s+$/g, '');
+        return `\n\n$$\n${inner}\n$$\n\n`;
     });
 
-    // 3) [ ... ] when they are on their own lines (display)
-    // require newline before and after (or start/end) to avoid list/array false-positives
+    // 3) HANDLE square-bracket display blocks [ ... ] (literal bracket on its own lines)
     text = text.replace(/(^|\n)[ \t]*\[[ \t]*\n([\s\S]*?)\n[ \t]*\][ \t]*(?=\n|$)/g, function(_, lead, inner) {
-      return lead + add(inner, true);
+        inner = inner.replace(/^\s+|\s+$/g, '');
+        return `\n\n$$\n${inner}\n$$\n\n`;
     });
 
-    // 4) Inline \(...\) standard TeX inline (preserve as inline)
-    text = text.replace(/\\\(([\s\S]*?)\\\)/g, function(_, inner) {
-      return add(inner, false);
+    // 4) Inline bracketed LaTeX starting with backslash: [\frac{...}] or [\alpha]
+    // Convert to inline math $...$
+    text = text.replace(/\[\s*(\\(?:[^\]\r\n]|\\\]|\\\r|\n)+?)\s*\]/g, function(_, inner) {
+        inner = inner.replace(/^\s+|\s+$/g, '');
+        return `$${inner}$`;
     });
 
-    // 5) Inline bracketed LaTeX that starts with backslash: [\frac{...}] etc. -> inline
-    text = text.replace(/\[\s*(\\[^\]\n]+?)\s*\]/g, function(_, inner) {
-      return add(inner, false);
+    // 5) Parenthesis-wrapped inline LaTeX when '(' immediately followed by backslash:
+    // (\bar{x} = 75{,}000) -> $ \bar{x} = 75{,}000 $
+    text = text.replace(/\(\s*(\\(?:[^)\r\n]|\\\)|\\\r|\n)+?)\s*\)/g, function(_, inner) {
+        inner = inner.replace(/^\s+|\s+$/g, '');
+        return `$${inner}$`;
     });
 
-    // 6) Parenthesis inline where '(' immediately followed by backslash: (\bar{x}...)
-    text = text.replace(/\(\s*(\\[^)\n]+?)\s*\)/g, function(_, inner) {
-      return add(inner, false);
-    });
+    // 6) Collapse many blank lines for cleaner HTML
+    text = text.replace(/\n{3,}/g, '\n\n');
 
-    // After all replacements, return text and math array
-    return { text, math };
-  }
+    // Debug: show a small sample in console so you can verify conversion
+    try {
+        if (console && console.debug) {
+        console.debug('preprocessMath sample >>>', text.slice(0, 800).replace(/\n/g, '\\n'));
+        }
+    } catch(e){}
 
-  // Reinsert math placeholders into rendered HTML string (before MathJax runs)
-  function reinsertMathIntoHtml(htmlString, math) {
-    if (!math || !math.length) return htmlString;
-    // Replace tokens with preserved math delimiters
-    // Do a global replace for each token
-    for (let i = 0; i < math.length; i++) {
-      const token = `@@MATH_${i}@@`;
-      const content = math[i].isDisplay ? `$$${math[i].inner}$$` : `$${math[i].inner}$`;
-      // use split/join to replace all occurrences safely
-      htmlString = htmlString.split(token).join(content);
+    return text;
     }
-    return htmlString;
-  }
+
 
   // ---------------- Render pipeline ----------------
-  async function renderMarkdown(rawMarkdownText, sourceLabel = '') {
+  async function renderMarkdown(markdownText, sourceLabel = '') {
     try {
-      // 1) Extract math blocks -> placeholders
-      const { text: withPlaceholders, math } = extractMathBlocks(rawMarkdownText);
+      // Preprocess math first
+      markdownText = preprocessMath(markdownText);
 
-      // 2) Remove placeholder UI if present
+      // Remove placeholder if present
       if (placeholder && placeholder.parentNode) placeholder.parentNode.removeChild(placeholder);
 
-      // 3) Render markdown (markdown-it) with placeholders - markdown-it cannot mangle math now
-      const rendered = md.render(withPlaceholders);
+      // Render to HTML
+      const rendered = md.render(markdownText);
+      viewer.innerHTML = rendered;
 
-      // 4) Reinsert math strings into the HTML string
-      const finalHtml = reinsertMathIntoHtml(rendered, math);
-
-      // 5) Inject HTML into viewer
-      viewer.innerHTML = finalHtml;
-
-      // 6) Build TOC
+      // Build TOC
       buildTOC();
 
-      // 7) Syntax highlight
+      // Syntax highlight
       document.querySelectorAll('pre code').forEach(el => {
         try { hljs.highlightElement(el); } catch (e) {}
       });
 
-      // 8) Mermaid: convert mermaid codeblocks into .mermaid containers then init
+      // Mermaid rendering: convert code blocks with language-mermaid into .mermaid divs
       try {
         const mermaidBlocks = viewer.querySelectorAll('pre code.language-mermaid, code.language-mermaid');
         mermaidBlocks.forEach(c => {
@@ -161,26 +152,25 @@
           mermaid.init(undefined, viewer.querySelectorAll('.mermaid'));
         }
       } catch (e) {
-        console.warn('mermaid rendering failed', e);
+        console.warn('mermaid error', e);
       }
 
-      // 9) Ask MathJax to typeset the page (await it)
+      // MathJax typeset after injecting HTML
       if (window.MathJax && window.MathJax.typesetPromise) {
         try {
           await window.MathJax.typesetPromise();
         } catch (e) {
-          console.warn('MathJax typesetPromise error', e);
+          console.warn('MathJax typeset error', e);
         }
       } else {
-        console.warn('MathJax not loaded or typesetPromise unavailable.');
+        if (typeof console !== 'undefined') console.warn('MathJax not available to typeset.');
       }
 
-      // focus and title
       viewer.focus();
       if (sourceLabel) document.title = `${sourceLabel} — Markdown Viewer`;
     } catch (err) {
       console.error('Render error', err);
-      viewer.innerHTML = `<pre style="color:crimson">Render error: ${err && err.message ? err.message : err}</pre>`;
+      viewer.innerHTML = `<pre style="color:crimson">Render error: ${err.message}</pre>`;
     }
   }
 
@@ -222,6 +212,7 @@
       console.error('loadFromUrl error', e);
     }
   }
+
   loadUrlBtn && loadUrlBtn.addEventListener('click', () => {
     const u = urlInput && urlInput.value && urlInput.value.trim();
     if (u) loadFromUrl(u);
@@ -246,6 +237,7 @@
       console.error('file read error', e);
     }
   });
+
   ['dragenter','dragover'].forEach(evt => {
     window.addEventListener(evt, (e) => { e.preventDefault(); e.stopPropagation(); });
   });
@@ -269,7 +261,7 @@
   scrollTopBtn && scrollTopBtn.addEventListener('click', () => window.scrollTo({ top: 0, behavior: 'smooth' }));
   scrollBottomBtn && scrollBottomBtn.addEventListener('click', () => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }));
 
-  // --- Optional demo load (commented) ---
+  // Optional sample load (commented)
   // const sample = 'https://raw.githubusercontent.com/simov/markdown-viewer/main/README.md';
   // urlInput.value = sample; loadFromUrl(sample);
 
