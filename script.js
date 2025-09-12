@@ -1,12 +1,8 @@
-// script.js
-// Full, self-contained client-side Markdown viewer script.
-// - markdown-it + many plugins (loaded from index.html)
-// - Preprocesses nonstandard math wrappers to MathJax-friendly delimiters
-// - Mermaid diagrams, highlight.js, MathJax typesetting
-// - File open / drag-drop, load from ?src=URL, TOC, theme toggle, print-to-PDF
+// script.js (updated - stronger math preprocessing + debug snippet)
+// Replace your existing script.js with this file and push to GitHub Pages.
 
 (() => {
-  // --- DOM references ---
+  // --- DOM refs ---
   const viewer = document.getElementById('viewer');
   const placeholder = document.getElementById('placeholder');
   const toc = document.getElementById('toc');
@@ -26,18 +22,18 @@
     breaks: true
   });
 
-  // Try to register available plugins (graceful if a plugin is not loaded)
-  try { if (window.markdownitEmoji) md.use(window.markdownitEmoji); } catch (e) {}
-  try { if (window.markdownitDeflist) md.use(window.markdownitDeflist); } catch (e) {}
-  try { if (window.markdownitFootnote) md.use(window.markdownitFootnote); } catch (e) {}
-  try { if (window.markdownitMark) md.use(window.markdownitMark); } catch (e) {}
-  try { if (window.markdownitSub) md.use(window.markdownitSub); } catch (e) {}
-  try { if (window.markdownitSup) md.use(window.markdownitSup); } catch (e) {}
-  try { if (window.markdownitTaskLists) md.use(window.markdownitTaskLists, { enabled: true }); } catch (e) {}
-  try { if (window.markdownitAttrs) md.use(window.markdownitAttrs); } catch (e) {}
-  try { if (window.markdownitLinkifyImages) md.use(window.markdownitLinkifyImages); } catch (e) {}
+  // register plugins (if available)
+  try { if (window.markdownitEmoji) md.use(window.markdownitEmoji); } catch {}
+  try { if (window.markdownitDeflist) md.use(window.markdownitDeflist); } catch {}
+  try { if (window.markdownitFootnote) md.use(window.markdownitFootnote); } catch {}
+  try { if (window.markdownitMark) md.use(window.markdownitMark); } catch {}
+  try { if (window.markdownitSub) md.use(window.markdownitSub); } catch {}
+  try { if (window.markdownitSup) md.use(window.markdownitSup); } catch {}
+  try { if (window.markdownitTaskLists) md.use(window.markdownitTaskLists, { enabled: true }); } catch {}
+  try { if (window.markdownitAttrs) md.use(window.markdownitAttrs); } catch {}
+  try { if (window.markdownitLinkifyImages) md.use(window.markdownitLinkifyImages); } catch {}
 
-  // --- Theme handling ---
+  // --- theme toggle ---
   function setTheme(t) {
     if (t === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
     else document.documentElement.removeAttribute('data-theme');
@@ -49,83 +45,102 @@
     setTheme(current === 'dark' ? 'light' : 'dark');
   });
 
-  // --- Math preprocessing ---
-  // Convert some common non-standard wrappers into MathJax-friendly delimiters.
+  // ---------------- Strong math preprocessing ----------------
+  // This converts many nonstandard math wrappers into MathJax-friendly $...$ and $$...$$.
   function preprocessMath(markdownText) {
     let text = markdownText;
 
-    // 1) Convert square-bracket display blocks spanning lines:
-    //    For blocks like:
-    //    [
-    //    \text{Population} = \frac{Deaths}{Rate}
-    //    ]
-    //    convert to:
-    //    $$
-    //    \text{Population} = \frac{Deaths}{Rate}
-    //    $$
-    text = text.replace(/^\[\s*\n([\s\S]*?)\n\]\s*$/gm, function(_, inner) {
-      return "\n$$\n" + inner.trim() + "\n$$\n";
+    // Normalize line endings to \n for regex simplicity
+    text = text.replace(/\r\n/g, '\n');
+
+    // 1) Convert display blocks where [ and ] appear alone on lines (allow spaces/indentation)
+    //    matches:
+    //      [    \n  ... \n  ]
+    //    or with indentation/spaces. This will produce:
+    //      $$\n ... \n$$
+    text = text.replace(/(^|\n)[ \t]*\[[ \t]*\n([\s\S]*?)\n[ \t]*\][ \t]*(?=\n|$)/g, function(_, lead, inner) {
+      inner = inner.replace(/^\s+|\s+$/g, ''); // trim inner
+      return `\n\n$$\n${inner}\n$$\n\n`;
     });
 
-    // 2) Inline [\math...] on same line -> $...$
-    //    e.g. [\frac{a}{b}] -> $ \frac{a}{b} $
-    text = text.replace(/\[\s*(\\[^\]]+?)\s*\]/g, function(_, inner) {
-      return "$" + inner.trim() + "$";
+    // 2) Convert display blocks where [ and ] are on same line but content spans multiple lines separated by blank lines:
+    //    "[\n ... \n ]" already handled; this tries to catch stray variants.
+    // (No-op: covered above)
+
+    // 3) Convert single-line inline bracketed LaTeX: [\frac{...}] -> $ \frac{...} $
+    //    and also [\alpha], [\bar{x}] etc.
+    text = text.replace(/\[\s*(\\(?:[^]\r\n]|\\\]|\\\r|\n)+?)\s*\]/g, function(_, inner) {
+      // inner is LaTeX starting with backslash
+      inner = inner.replace(/^\s+|\s+$/g, '');
+      return `$${inner}$`;
     });
 
-    // 3) Parenthesis-wrapped inline math when '(' immediately followed by backslash:
-    //    e.g. (\bar{x} = 75{,}000) -> $ \bar{x} = 75{,}000 $
-    text = text.replace(/\(\s*(\\[^)]+?)\s*\)/g, function(_, inner) {
-      return "$" + inner.trim() + "$";
+    // 4) Convert parenthesis-wrapped inline LaTeX when '(' immediately followed by backslash:
+    //    (\bar{x}_{respondents} = 75{,}000)  -> $ \bar{x}_{respondents} = 75{,}000 $
+    text = text.replace(/\(\s*(\\(?:[^)\r\n]|\\\)|\\\r|\n)+?)\s*\)/g, function(_, inner) {
+      inner = inner.replace(/^\s+|\s+$/g, '');
+      return `$${inner}$`;
     });
 
-    // 4) Optional: collapse repeated blank lines around display math for cleaner output
-    text = text.replace(/\n{3,}/g, "\n\n");
+    // 5) Convert bracket display blocks that start with optional whitespace then '[' and end with ']' possibly with surrounding blank lines
+    //    This is additional safety for files with variable spacing
+    text = text.replace(/(^|\n)[ \t]*\[\s*\n([\s\S]*?)\n[ \t]*\][ \t]*(?=\n|$)/g, function(_, lead, inner) {
+      inner = inner.trim();
+      return `\n\n$$\n${inner}\n$$\n\n`;
+    });
+
+    // 6) Collapse multiple blank lines (nice for rendering)
+    text = text.replace(/\n{3,}/g, '\n\n');
+
+    // Debugging: log first 800 chars of processed text so you can verify conversion in console
+    try {
+      if (typeof console !== 'undefined' && console.debug) {
+        console.debug('--- preprocessMath sample (first 800 chars) ---\n', text.slice(0, 800));
+      }
+    } catch (e) {}
 
     return text;
   }
 
-  // --- Render function ---
+  // ---------------- Render pipeline ----------------
   async function renderMarkdown(markdownText, sourceLabel = '') {
     try {
-      // Preprocess math patterns so MathJax can find math delimiters
+      // preprocess math early
       markdownText = preprocessMath(markdownText);
 
-      // Remove placeholder if present
+      // remove placeholder
       if (placeholder && placeholder.parentNode) placeholder.parentNode.removeChild(placeholder);
 
-      // Render markdown -> HTML
+      // render markdown to HTML
       const rendered = md.render(markdownText);
       viewer.innerHTML = rendered;
 
-      // Build TOC
+      // build TOC
       buildTOC();
 
-      // Syntax highlight
-      document.querySelectorAll('pre code').forEach((el) => {
+      // highlight code
+      [...viewer.querySelectorAll('pre code')].forEach(el => {
         try { hljs.highlightElement(el); } catch (e) {}
       });
 
-      // Mermaid handling:
+      // mermaid: convert code blocks marked as mermaid into .mermaid containers
       try {
-        // Convert code fences with language mermaid into .mermaid containers
-        document.querySelectorAll('pre code.language-mermaid, code.language-mermaid').forEach((c) => {
-          const txt = c.textContent || c.innerText;
-          const wrapper = document.createElement('div');
-          wrapper.className = 'mermaid';
-          wrapper.textContent = txt;
-          // If code is inside pre, replace pre with wrapper; else replace code
+        const mermaidBlocks = viewer.querySelectorAll('pre code.language-mermaid, code.language-mermaid');
+        mermaidBlocks.forEach(c => {
+          const text = c.textContent || c.innerText || '';
+          const div = document.createElement('div');
+          div.className = 'mermaid';
+          div.textContent = text;
           const pre = c.closest('pre');
-          if (pre && pre.parentNode) pre.parentNode.replaceChild(wrapper, pre);
-          else if (c.parentNode) c.parentNode.replaceChild(wrapper, c);
+          if (pre && pre.parentNode) pre.parentNode.replaceChild(div, pre);
+          else if (c.parentNode) c.parentNode.replaceChild(div, c);
         });
-        // Initialize mermaid to render diagrams
         if (window.mermaid) {
           mermaid.initialize({ startOnLoad: false, theme: 'default' });
           mermaid.init(undefined, viewer.querySelectorAll('.mermaid'));
         }
       } catch (e) {
-        console.warn('mermaid rendering error', e);
+        console.warn('mermaid error', e);
       }
 
       // MathJax typeset after HTML insertion
@@ -133,16 +148,14 @@
         try {
           await window.MathJax.typesetPromise();
         } catch (e) {
-          console.warn('MathJax.typesetPromise error', e);
+          console.warn('MathJax typeset error', e);
         }
       } else {
-        // if MathJax not present, do nothing
+        // If MathJax not loaded, show a console warning (helps debugging)
+        if (typeof console !== 'undefined') console.warn('MathJax not available to typeset.');
       }
 
-      // Focus viewer for keyboard scrolling
       viewer.focus();
-
-      // Update document title if source provided
       if (sourceLabel) document.title = `${sourceLabel} — Markdown Viewer`;
     } catch (err) {
       console.error('Render error', err);
@@ -150,7 +163,7 @@
     }
   }
 
-  // --- Build TOC from headings ---
+  // ---------------- Build TOC ----------------
   function buildTOC() {
     toc.innerHTML = '';
     const headings = viewer.querySelectorAll('h1,h2,h3,h4,h5,h6');
@@ -161,8 +174,7 @@
     headings.forEach(h => {
       if (!h.id) {
         h.id = (h.textContent || h.innerText).trim().toLowerCase()
-                .replace(/[^\w\- ]+/g,'')
-                .replace(/\s+/g,'-');
+               .replace(/[^\w\- ]+/g,'').replace(/\s+/g,'-');
       }
       const a = document.createElement('a');
       a.href = `#${h.id}`;
@@ -176,26 +188,25 @@
     });
   }
 
-  // --- Load from URL ---
+  // ---------------- Load from URL ----------------
   async function loadFromUrl(url) {
     try {
-      // allow GitHub raw links or direct raw content
-      const res = await fetch(url);
+      const res = await fetch(url, { mode: 'cors' });
       if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
       const mdText = await res.text();
       await renderMarkdown(mdText, url);
     } catch (e) {
       alert('Failed to load URL: ' + e.message);
-      console.error(e);
+      console.error('loadFromUrl error', e);
     }
   }
 
   loadUrlBtn.addEventListener('click', () => {
-    const u = urlInput.value.trim();
+    const u = (urlInput && urlInput.value || '').trim();
     if (u) loadFromUrl(u);
   });
 
-  // If page has ?src=... parameter, auto-load it
+  // auto-load ?src=...
   const params = new URLSearchParams(location.search);
   if (params.get('src')) {
     const src = params.get('src');
@@ -203,23 +214,20 @@
     loadFromUrl(src);
   }
 
-  // --- File input & drag/drop handling ---
-  fileInput.addEventListener('change', async (ev) => {
+  // ---------------- File & Drag/Drop ----------------
+  fileInput && fileInput.addEventListener('change', async (ev) => {
     const f = ev.target.files && ev.target.files[0];
     if (!f) return;
     try {
       const text = await f.text();
       await renderMarkdown(text, f.name);
     } catch (e) {
-      console.error('File read error', e);
+      console.error('file read error', e);
     }
   });
 
-  // Drag / drop
   ['dragenter','dragover'].forEach(evt => {
-    window.addEventListener(evt, (e) => {
-      e.preventDefault(); e.stopPropagation();
-    });
+    window.addEventListener(evt, (e) => { e.preventDefault(); e.stopPropagation(); });
   });
   window.addEventListener('drop', async (e) => {
     e.preventDefault(); e.stopPropagation();
@@ -229,25 +237,20 @@
         const text = await f.text();
         await renderMarkdown(text, f.name);
       } catch (err) {
-        console.error('Drop file read error', err);
+        console.error('drop file read error', err);
       }
     }
   });
 
-  // --- Print / Save as PDF (rudimentary) ---
-  downloadPdfBtn.addEventListener('click', () => {
-    // Use browser print dialog; mobile browsers often support Save as PDF.
-    window.print();
-  });
+  // ---------------- Print / Save as PDF ----------------
+  downloadPdfBtn && downloadPdfBtn.addEventListener('click', () => window.print());
 
-  // --- Scroll helpers ---
+  // ---------------- Scroll helpers ----------------
   scrollTopBtn && scrollTopBtn.addEventListener('click', () => window.scrollTo({ top: 0, behavior: 'smooth' }));
   scrollBottomBtn && scrollBottomBtn.addEventListener('click', () => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }));
 
-  // --- Optional: show sample readme on load (uncomment to enable) ---
+  // Optional: initial sample load (commented)
   // const sample = 'https://raw.githubusercontent.com/simov/markdown-viewer/main/README.md';
-  // urlInput.value = sample;
-  // loadFromUrl(sample);
+  // urlInput.value = sample; loadFromUrl(sample);
 
-  // --- End closure ---
-})();
+})(); 
