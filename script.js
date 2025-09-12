@@ -1,7 +1,3 @@
-// script.js — final robust version
-// Shields code blocks, extracts math safely, reinserts as DOM placeholders (textContent),
-// then asks MathJax to typeset. Also supports mermaid, highlight.js, TOC, drag/drop, theme toggle.
-
 (() => {
   // DOM refs
   const viewer = document.getElementById('viewer');
