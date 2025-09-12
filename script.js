@@ -1,9 +1,9 @@
-// script.js — final with TreeWalker + fallback innerHTML replacement for leftover @@MATH tokens
-// Shields code regions, extracts math, reinserts safely as DOM placeholders (textContent), then typesets MathJax.
-// Also supports mermaid, highlight.js, TOC, file drag/drop, theme toggle, print.
+// script.js — robust final version using private-use sentinel tokens
+// - Shields code regions, extracts math safely, reinserts as DOM placeholders using textContent,
+//   uses TreeWalker+fallback replacement, then MathJax.typesetPromise([viewer])
 
 (() => {
-  // DOM refs
+  // DOM refs (adjust IDs if your HTML differs)
   const viewer = document.getElementById('viewer');
   const placeholder = document.getElementById('placeholder');
   const toc = document.getElementById('toc');
@@ -15,7 +15,15 @@
   const scrollTopBtn = document.getElementById('scrollTop');
   const scrollBottomBtn = document.getElementById('scrollBottom');
 
-  // markdown-it
+  // safer sentinel tokens (private-use area characters)
+  const SENTINEL = {
+    CODE_OPEN: "\uF111",
+    CODE_CLOSE: "\uF112",
+    MATH_OPEN: "\uF121",
+    MATH_CLOSE: "\uF122"
+  };
+
+  // markdown-it setup
   const md = window.markdownit({
     html: true,
     linkify: true,
@@ -34,7 +42,7 @@
   try { if (window.markdownitAttrs) md.use(window.markdownitAttrs); } catch(e){}
   try { if (window.markdownitLinkifyImages) md.use(window.markdownitLinkifyImages); } catch(e){}
 
-  // theme handling
+  // theme handling (optional)
   function setTheme(t) {
     if (t === 'dark') document.documentElement.setAttribute('data-theme','dark');
     else document.documentElement.removeAttribute('data-theme');
@@ -46,42 +54,41 @@
     setTheme(cur === 'dark' ? 'light' : 'dark');
   });
 
-  // ---------- Shield code regions ----------
+  // ---------------- Utility: shield code regions ----------------
   function shieldCodeRegions(text) {
     const codeBlocks = [];
     if (!text) return { text: '', codeBlocks };
-
     text = text.replace(/\r\n/g,'\n');
 
-    // fenced code blocks
-    text = text.replace(/(^|\n)(```[\s\S]*?```)(?=\n|$)/g, function(_, lead, block) {
-      const token = `@@CODE_BLOCK_${codeBlocks.length}@@`;
+    // 1) fenced blocks ```...```
+    text = text.replace(/(^|\n)(```[\s\S]*?```)(?=\n|$)/g, function(_, lead, block){
+      const token = `${SENTINEL.CODE_OPEN}CODE_BLOCK_${codeBlocks.length}${SENTINEL.CODE_CLOSE}`;
       codeBlocks.push(block);
       return lead + token;
     });
 
-    // indented code blocks (simple capture)
-    text = text.replace(/(^|\n)((?:[ \t]{4}.*\n?)+)/g, function(_, lead, block) {
-      const token = `@@CODE_BLOCK_${codeBlocks.length}@@`;
+    // 2) indented blocks (simple capture)
+    text = text.replace(/(^|\n)((?:[ \t]{4}.*\n?)+)/g, function(_, lead, block){
+      const token = `${SENTINEL.CODE_OPEN}CODE_BLOCK_${codeBlocks.length}${SENTINEL.CODE_CLOSE}`;
       codeBlocks.push(block);
       return lead + token;
     });
 
-    // inline code with backticks (handles varying lengths)
-    text = text.replace(/(`+)([\s\S]*?)\1/g, function(_, ticks, inner) {
-      const token = `@@CODE_BLOCK_${codeBlocks.length}@@`;
+    // 3) inline code ticks `...` (handles varying tick lengths via regex)
+    text = text.replace(/(`+)([\s\S]*?)\1/g, function(_, ticks, inner){
+      const token = `${SENTINEL.CODE_OPEN}CODE_BLOCK_${codeBlocks.length}${SENTINEL.CODE_CLOSE}`;
       codeBlocks.push(ticks + inner + ticks);
       return token;
     });
 
-    // HTML <pre> and <code>
-    text = text.replace(/(<pre[\s\S]*?<\/pre>)/gi, function(_, block) {
-      const token = `@@CODE_BLOCK_${codeBlocks.length}@@`;
+    // 4) HTML pre/code
+    text = text.replace(/(<pre[\s\S]*?<\/pre>)/gi, function(_, block){
+      const token = `${SENTINEL.CODE_OPEN}CODE_BLOCK_${codeBlocks.length}${SENTINEL.CODE_CLOSE}`;
       codeBlocks.push(block);
       return token;
     });
-    text = text.replace(/(<code[\s\S]*?<\/code>)/gi, function(_, block) {
-      const token = `@@CODE_BLOCK_${codeBlocks.length}@@`;
+    text = text.replace(/(<code[\s\S]*?<\/code>)/gi, function(_, block){
+      const token = `${SENTINEL.CODE_OPEN}CODE_BLOCK_${codeBlocks.length}${SENTINEL.CODE_CLOSE}`;
       codeBlocks.push(block);
       return token;
     });
@@ -89,90 +96,120 @@
     return { text, codeBlocks };
   }
 
-  // ---------- Math extraction ----------
+  // ---------------- Math extraction ----------------
   function extractMathBlocks(text) {
     const math = [];
     if (!text) return { text: '', math };
     text = text.replace(/\r\n/g,'\n');
 
-    function store(inner, isDisplay){
-      const token = `@@MATH_${math.length}@@`;
+    function store(inner, isDisplay) {
+      const token = `${SENTINEL.MATH_OPEN}MATH_${math.length}${SENTINEL.MATH_CLOSE}`;
       math.push({ inner, isDisplay: !!isDisplay });
       return token;
     }
 
-    // protect \begin...\end
-    text = text.replace(/\\begin\{([a-zA-Z*0-9_\-]+)\}([\s\S]*?)\\end\{\1\}/g, function(_, env, inner) {
+    // protect \begin{...}...\end{...}
+    text = text.replace(/\\begin\{([a-zA-Z*0-9_\-]+)\}([\s\S]*?)\\end\{\1\}/g, function(_, env, inner){
       return store(`\\begin{${env}}${inner}\\end{${env}}`, true);
     });
 
-    // $$...$$
-    text = text.replace(/\$\$([\s\S]*?)\$\$/g, function(_, inner) { return store(inner, true); });
+    // $$ ... $$
+    text = text.replace(/\$\$([\s\S]*?)\$\$/g, function(_, inner){ return store(inner, true); });
 
-    // \[ ... \]
-    text = text.replace(/\\\[\s*([\s\S]*?)\s*\\\]/g, function(_, inner) { return store(inner, true); });
+    // \[ ... \] display
+    text = text.replace(/\\\[\s*([\s\S]*?)\s*\\\]/g, function(_, inner){ return store(inner, true); });
 
-    // [ ... ] display when on own lines
-    text = text.replace(/(^|\n)[ \t]*\[[ \t]*\n([\s\S]*?)\n[ \t]*\][ \t]*(?=\n|$)/g, function(_, lead, inner) {
+    // [ ... ] display when on its own lines (common in some notes)
+    text = text.replace(/(^|\n)[ \t]*\[[ \t]*\n([\s\S]*?)\n[ \t]*\][ \t]*(?=\n|$)/g, function(_, lead, inner){
       return lead + store(inner, true);
     });
 
     // \( ... \) inline
-    text = text.replace(/\\\(([\s\S]*?)\\\)/g, function(_, inner) { return store(inner, false); });
+    text = text.replace(/\\\(([\s\S]*?)\\\)/g, function(_, inner){ return store(inner, false); });
 
-    // inline bracketed starting with backslash [\...]
-    text = text.replace(/\[\s*(\\[^\]\n]+?)\s*\]/g, function(_, inner) { return store(inner, false); });
+    // [\something] inline (bracket with backslash)
+    text = text.replace(/\[\s*(\\[^\]\n]+?)\s*\]/g, function(_, inner){ return store(inner, false); });
 
-    // parenthesis starting with backslash (\... )
-    text = text.replace(/\(\s*(\\[^)\n]+?)\s*\)/g, function(_, inner) { return store(inner, false); });
+    // (\something) inline (parenthesis with leading backslash)
+    text = text.replace(/\(\s*(\\[^)\n]+?)\s*\)/g, function(_, inner){ return store(inner, false); });
 
     return { text, math };
   }
 
-  // ---------- DOM-aware token replacement using TreeWalker ----------
+  // ---------------- DOM-aware token replacement (TreeWalker) ----------------
   function replaceTokensInDOM(math, codeBlocks) {
-    const tokenRe = /@@(MATH|CODE_BLOCK)_(\d+)@@/g;
+    // We will look for SENTINEL.MATH_OPEN and SENTINEL.CODE_OPEN inside textNodes and split them.
     const walker = document.createTreeWalker(viewer, NodeFilter.SHOW_TEXT, null, false);
     const nodes = [];
     let node;
     while ((node = walker.nextNode())) {
-      if (tokenRe.test(node.nodeValue)) nodes.push(node);
-      tokenRe.lastIndex = 0;
+      const v = node.nodeValue || '';
+      if (v.indexOf(SENTINEL.MATH_OPEN) !== -1 || v.indexOf(SENTINEL.CODE_OPEN) !== -1) nodes.push(node);
     }
 
     nodes.forEach(textNode => {
       const parent = textNode.parentNode;
       if (!parent) return;
+      const s = textNode.nodeValue || '';
+      let cursor = 0;
       const frag = document.createDocumentFragment();
-      const str = textNode.nodeValue;
-      tokenRe.lastIndex = 0;
-      let lastIndex = 0;
-      let m;
-      while ((m = tokenRe.exec(str)) !== null) {
-        const idx = m.index;
-        if (idx > lastIndex) frag.appendChild(document.createTextNode(str.slice(lastIndex, idx)));
-        const type = m[1]; const id = Number(m[2]);
-        if (type === 'MATH') {
-          const isDisplay = math[id] && math[id].isDisplay;
-          const el = isDisplay ? document.createElement('div') : document.createElement('span');
-          el.className = isDisplay ? 'md-math-block' : 'md-math-inline';
-          el.setAttribute('data-math-index', String(id));
+      // scan string for sentinel tokens
+      while (cursor < s.length) {
+        const iMath = s.indexOf(SENTINEL.MATH_OPEN, cursor);
+        const iCode = s.indexOf(SENTINEL.CODE_OPEN, cursor);
+        let nextIdx = -1;
+        let kind = null;
+        if (iMath === -1 && iCode === -1) nextIdx = -1;
+        else if (iMath === -1) { nextIdx = iCode; kind='CODE'; }
+        else if (iCode === -1) { nextIdx = iMath; kind='MATH'; }
+        else { nextIdx = Math.min(iMath, iCode); kind = nextIdx===iMath?'MATH':'CODE'; }
+
+        if (nextIdx === -1) {
+          frag.appendChild(document.createTextNode(s.slice(cursor)));
+          break;
+        }
+
+        // append text before token
+        if (nextIdx > cursor) frag.appendChild(document.createTextNode(s.slice(cursor, nextIdx)));
+
+        if (kind === 'MATH') {
+          const closeIdx = s.indexOf(SENTINEL.MATH_CLOSE, nextIdx + 1);
+          if (closeIdx === -1) {
+            // malformed: no close sentinel — append remainder and break
+            frag.appendChild(document.createTextNode(s.slice(nextIdx)));
+            break;
+          }
+          const tokenInner = s.slice(nextIdx + SENTINEL.MATH_OPEN.length, closeIdx);
+          // tokenInner should be like 'MATH_N'
+          const m = tokenInner.match(/^MATH_(\d+)$/);
+          const idx = m ? Number(m[1]) : NaN;
+          const el = document.createElement(math[idx] && math[idx].isDisplay ? 'div' : 'span');
+          el.className = (math[idx] && math[idx].isDisplay) ? 'md-math-block' : 'md-math-inline';
+          el.setAttribute('data-math-index', String(idx));
           frag.appendChild(el);
-        } else if (type === 'CODE_BLOCK') {
+          cursor = closeIdx + SENTINEL.MATH_CLOSE.length;
+        } else {
+          // CODE placeholder
+          const closeIdx = s.indexOf(SENTINEL.CODE_CLOSE, nextIdx + 1);
+          if (closeIdx === -1) {
+            frag.appendChild(document.createTextNode(s.slice(nextIdx)));
+            break;
+          }
+          const tokenInner = s.slice(nextIdx + SENTINEL.CODE_OPEN.length, closeIdx);
+          const m = tokenInner.match(/^CODE_BLOCK_(\d+)$/);
+          const idx = m ? Number(m[1]) : NaN;
           const el = document.createElement('div');
           el.className = 'md-code-block-placeholder';
-          el.setAttribute('data-code-index', String(id));
+          el.setAttribute('data-code-index', String(idx));
           frag.appendChild(el);
+          cursor = closeIdx + SENTINEL.CODE_CLOSE.length;
         }
-        lastIndex = tokenRe.lastIndex;
-      }
-      if (lastIndex < str.length) frag.appendChild(document.createTextNode(str.slice(lastIndex)));
+      } // end scan
       parent.replaceChild(frag, textNode);
-      tokenRe.lastIndex = 0;
     });
   }
 
-  // populate placeholders using textContent to preserve exact characters
+  // populate placeholders safely using textContent (preserves backslashes)
   function populatePlaceholders(math, codeBlocks) {
     viewer.querySelectorAll('span.md-math-inline').forEach(span => {
       const idx = Number(span.getAttribute('data-math-index'));
@@ -185,8 +222,7 @@
     viewer.querySelectorAll('div.md-code-block-placeholder').forEach(div => {
       const idx = Number(div.getAttribute('data-code-index'));
       const raw = codeBlocks && codeBlocks[idx] ? codeBlocks[idx] : '';
-      div.textContent = raw;
-      // replace placeholder with <pre><code> to preserve style
+      // restore as <pre><code>
       const pre = document.createElement('pre');
       const code = document.createElement('code');
       code.textContent = raw;
@@ -195,19 +231,21 @@
     });
   }
 
-  // ---------- Fallback innerHTML replacement for leftover tokens ----------
-  function fallbackReplaceRemainingMathTokens(math) {
+  // ---------- Fallback innerHTML replacement for any remaining sentinel tokens ----------
+  function fallbackReplaceRemainingMathTokens(math, codeBlocks) {
     try {
-      if (viewer.innerHTML.indexOf('@@MATH_') === -1) return;
+      if (viewer.innerHTML.indexOf(SENTINEL.MATH_OPEN) === -1) return;
+      // protect pre/code innerHTML
       const protectedList = [];
       viewer.querySelectorAll('pre, code').forEach((el, i) => {
-        const tagToken = `@@CODEPROT_${i}@@`;
-        protectedList.push({ token: tagToken, html: el.innerHTML });
-        el.innerHTML = tagToken;
+        const token = `${SENTINEL.CODE_OPEN}PROT_${i}${SENTINEL.CODE_CLOSE}`;
+        protectedList.push({ token, html: el.innerHTML });
+        el.innerHTML = token;
       });
 
+      // Replace all remaining math tokens in the HTML
       for (let i = 0; i < math.length; i++) {
-        const token = `@@MATH_${i}@@`;
+        const token = `${SENTINEL.MATH_OPEN}MATH_${i}${SENTINEL.MATH_CLOSE}`;
         if (viewer.innerHTML.indexOf(token) !== -1) {
           const placeholderHtml = math[i].isDisplay
             ? `<div class="md-math-block" data-math-index="${i}"></div>`
@@ -216,6 +254,7 @@
         }
       }
 
+      // restore protected code blocks
       protectedList.forEach(p => {
         viewer.innerHTML = viewer.innerHTML.split(p.token).join(p.html);
       });
@@ -227,37 +266,37 @@
   // ---------- Render pipeline ----------
   async function renderMarkdown(rawMd, sourceLabel='') {
     try {
-      // 1) Shield code regions
+      // 1) shield code regions
       const { text: shieldedText, codeBlocks } = shieldCodeRegions(rawMd || '');
 
-      // 2) Extract math blocks
+      // 2) extract math blocks (math tokens inserted in shielded text)
       const { text: placeholdered, math } = extractMathBlocks(shieldedText);
 
-      // 3) Render markdown-it
+      // 3) render markdown-it on placeholdered text
       const rendered = md.render(placeholdered);
 
-      // 4) Inject rendered HTML
+      // 4) insert HTML
       if (placeholder && placeholder.parentNode) placeholder.parentNode.removeChild(placeholder);
       viewer.innerHTML = rendered;
 
-      // 5) Attempt TreeWalker replacement
+      // 5) attempt DOM TreeWalker replacement for sentinel tokens
       replaceTokensInDOM(math, codeBlocks);
 
-      // 6) Fallback string-based replace if tokens remain
-      fallbackReplaceRemainingMathTokens(math);
+      // 6) fallback: if any sentinel math tokens remain, do protected innerHTML replacement
+      fallbackReplaceRemainingMathTokens(math, codeBlocks);
 
-      // 7) Populate placeholders with exact textContent
+      // 7) populate placeholders using textContent (preserve LaTeX exactly)
       populatePlaceholders(math, codeBlocks);
 
-      // 8) Build TOC
+      // 8) build TOC
       buildTOC();
 
-      // 9) Syntax highlight
+      // 9) syntax highlighting
       document.querySelectorAll('pre code').forEach(el => {
         try { hljs.highlightElement(el); } catch(e) {}
       });
 
-      // 10) Mermaid rendering
+      // 10) mermaid (replace code blocks with mermaid divs and render)
       try {
         const mermaidBlocks = viewer.querySelectorAll('pre code.language-mermaid, code.language-mermaid');
         mermaidBlocks.forEach(c => {
@@ -273,19 +312,24 @@
           mermaid.initialize({ startOnLoad: false, theme: 'default' });
           mermaid.init(undefined, viewer.querySelectorAll('.mermaid'));
         }
-      } catch(e) { console.warn('mermaid error', e); }
+      } catch (e) { console.warn('mermaid error', e); }
 
-      // 11) MathJax typeset
+      // 11) MathJax typeset (target the viewer for speed and to avoid re-rendering the whole page)
       if (window.MathJax && window.MathJax.typesetPromise) {
         try {
-          await window.MathJax.typesetPromise();
+          // some MathJax configs have startup document helpers; call if available (defensive)
+          if (window.MathJax.startup && window.MathJax.startup.document && typeof MathJax.startup.document.updateDocument === 'function') {
+            MathJax.startup.document.updateDocument();
+          }
+          await MathJax.typesetPromise([viewer]);
         } catch (e) {
-          console.warn('MathJax typesetPromise error', e);
+          console.warn('MathJax.typesetPromise error', e);
         }
       } else {
-        console.warn('MathJax not loaded or typesetPromise unavailable.');
+        console.warn('MathJax not available or typesetPromise missing.');
       }
 
+      // focus & title
       viewer.focus();
       if (sourceLabel) document.title = `${sourceLabel} — Markdown Viewer`;
     } catch (err) {
@@ -311,7 +355,7 @@
     });
   }
 
-  // ---------- Load from URL and events ----------
+  // ---------- Loading helpers ----------
   async function loadFromUrl(url) {
     try {
       const res = await fetch(url, { mode: 'cors' });
@@ -335,7 +379,7 @@
     loadFromUrl(src);
   }
 
-  // ---------- File input & drag/drop ----------
+  // ---------- file input & drag/drop ----------
   fileInput && fileInput.addEventListener('change', async (ev) => {
     const f = ev.target.files && ev.target.files[0]; if (!f) return;
     try { const txt = await f.text(); await renderMarkdown(txt, f.name); } catch(e){ console.error(e); }
@@ -354,8 +398,8 @@
   scrollTopBtn && scrollTopBtn.addEventListener('click', () => window.scrollTo({ top:0, behavior:'smooth' }));
   scrollBottomBtn && scrollBottomBtn.addEventListener('click', () => window.scrollTo({ top: document.body.scrollHeight, behavior:'smooth' }));
 
-  // Optional: demo load
+  // optional demo load
   // const sample = 'https://raw.githubusercontent.com/simov/markdown-viewer/main/README.md';
   // urlInput.value = sample; loadFromUrl(sample);
 
-})();
+})(); 
