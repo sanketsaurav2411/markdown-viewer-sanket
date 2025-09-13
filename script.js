@@ -13,6 +13,11 @@
   const urlInput = document.getElementById('urlInput');
   const loadUrlBtn = document.getElementById('loadUrlBtn');
   const toggleThemeBtn = document.getElementById('toggleTheme');
+    const homeBtn = document.getElementById('homeBtn');
+  homeBtn && homeBtn.addEventListener('click', () => {
+    window.location.href = 'https://sanketsaurav2411.github.io/markdown-viewer-sanket/';
+  });
+
   const downloadPdfBtn = document.getElementById('downloadPdf');
   const scrollTopBtn = document.getElementById('scrollTop');
   const scrollBottomBtn = document.getElementById('scrollBottom');
@@ -391,3 +396,4 @@
   // urlInput.value = sample; loadFromUrl(sample);
 
 })();
+
