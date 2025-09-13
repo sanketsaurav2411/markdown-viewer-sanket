@@ -13,15 +13,9 @@
   const urlInput = document.getElementById('urlInput');
   const loadUrlBtn = document.getElementById('loadUrlBtn');
   const toggleThemeBtn = document.getElementById('toggleTheme');
-    const homeBtn = document.getElementById('homeBtn');
-  homeBtn && homeBtn.addEventListener('click', () => {
-    window.location.href = 'https://sanketsaurav2411.github.io/markdown-viewer-sanket/';
-  });
-
   const downloadPdfBtn = document.getElementById('downloadPdf');
   const scrollTopBtn = document.getElementById('scrollTop');
   const scrollBottomBtn = document.getElementById('scrollBottom');
-  const fileListNav = document.getElementById('fileList');
 
   // --- markdown-it setup ---
   const md = window.markdownit({
@@ -75,6 +69,7 @@
     }
 
     // 0) Protect \begin{env}...\end{env} (treat as display)
+    // Use a loop to capture nested same env occurrences properly
     text = text.replace(/\\begin\{([a-zA-Z*0-9_-]+)\}([\s\S]*?)\\end\{\1\}/g, function(_, env, inner) {
       return store(`\\begin{${env}}${inner}\\end{${env}}`, true);
     });
@@ -84,31 +79,34 @@
       return store(inner, true);
     });
 
-    // 2) \[ ... \] (display)
+    // 2) \[ ... \] (display) - multi or single line
     text = text.replace(/\\\[\s*([\s\S]*?)\s*\\\]/g, function(_, inner) {
       return store(inner, true);
     });
 
-    // 3) [ ... ] as display when on its own lines
+    // 3) [ ... ] as display when on its own lines:
+    // require that the opening '[' is at start of line (allow spaces) and closing ']' at line end
     text = text.replace(/(^|\n)[ \t]*\[[ \t]*\n([\s\S]*?)\n[ \t]*\][ \t]*(?=\n|$)/g, function(m, lead, inner) {
       return lead + store(inner, true);
     });
 
-    // 4) \(...\) inline
+    // 4) \(...\) inline standard TeX
     text = text.replace(/\\\(([\s\S]*?)\\\)/g, function(_, inner) {
       return store(inner, false);
     });
 
-    // 5) Inline bracketed LaTeX starting with backslash
+    // 5) Inline bracketed LaTeX starting with backslash: [\alpha], [\frac{..}] -> inline
     text = text.replace(/\[\s*(\\[^\]\n]+?)\s*\]/g, function(_, inner) {
       return store(inner, false);
     });
 
-    // 6) Parenthesis-wrapped inline LaTeX when '(' immediately followed by backslash
+    // 6) Parenthesis-wrapped inline LaTeX when '(' immediately followed by backslash:
+    //    (\bar{x} = ...)
     text = text.replace(/\(\s*(\\[^)\n]+?)\s*\)/g, function(_, inner) {
       return store(inner, false);
     });
 
+    // Return placeholdered text and math array
     return { text, math };
   }
 
@@ -116,6 +114,8 @@
    * Reinsert placeholders into HTML string as DOM placeholders:
    * - display -> <div class="md-math-block" data-math-index="i"></div>
    * - inline  -> <span class="md-math-inline" data-math-index="i"></span>
+   *
+   * This avoids inserting raw $...$ into HTML where parsing could mangle backslashes.
    */
   function reinsertMathIntoHtmlSafely(htmlString, math) {
     if (!math || !math.length) return htmlString;
@@ -136,6 +136,7 @@
   function populateMathPlaceholders(math) {
     if (!math || !math.length) return;
     try {
+      // Inline spans
       const inlines = viewer.querySelectorAll('span.md-math-inline');
       inlines.forEach(span => {
         const idx = Number(span.getAttribute('data-math-index'));
@@ -145,6 +146,7 @@
         }
       });
 
+      // Block divs
       const blocks = viewer.querySelectorAll('div.md-math-block');
       blocks.forEach(div => {
         const idx = Number(div.getAttribute('data-math-index'));
@@ -214,6 +216,8 @@
         } catch (e) {
           console.warn('MathJax typesetPromise error', e);
         }
+      } else {
+        console.warn('MathJax not loaded or typesetPromise unavailable.');
       }
 
       // Focus for keyboard scrolling; update title
@@ -312,88 +316,8 @@
   scrollTopBtn && scrollTopBtn.addEventListener('click', () => window.scrollTo({ top: 0, behavior: 'smooth' }));
   scrollBottomBtn && scrollBottomBtn.addEventListener('click', () => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }));
 
-  // ---------------- File list (loads from files/list.json) ----------
-  async function tryFetchJson(url) {
-    try {
-      const r = await fetch(url, {cache: "no-store"});
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      return await r.json();
-    } catch (e) {
-      return null;
-    }
-  }
-
-  async function loadFileManifestAndRender() {
-    if (!fileListNav) return;
-    fileListNav.innerHTML = '<p style="color:var(--muted)">Loading files…</p>';
-
-    // use relative paths so it works on GH Pages subpaths
-    const candidates = [
-      'files/list.json',
-      'files/index.json',
-      'files.json',
-      'list.json'
-    ];
-
-    let manifest = null;
-    for (const c of candidates) {
-      manifest = await tryFetchJson(c);
-      if (Array.isArray(manifest)) { break; }
-      manifest = null;
-    }
-
-    if (!manifest || !manifest.length) {
-      fileListNav.innerHTML = '<p style="color:var(--muted)">No file manifest found. Create <code>files/list.json</code> with an array of markdown filenames.</p>';
-      return;
-    }
-
-    // render list
-    fileListNav.innerHTML = '';
-    const ul = document.createElement('ul');
-    ul.style.listStyle = 'none';
-    ul.style.padding = '0';
-    ul.style.margin = '0';
-    manifest.forEach(name => {
-      const li = document.createElement('li');
-      li.style.marginBottom = '6px';
-      const a = document.createElement('a');
-      a.href = '#';
-      a.textContent = name;
-      a.title = `Open ${name}`;
-      a.style.color = 'var(--accent)';
-      a.style.textDecoration = 'none';
-      a.addEventListener('click', async (ev) => {
-        ev.preventDefault();
-        // build path; do not double-encode slashes
-        const encodedName = encodeURIComponent(name).replace(/%2F/g, '/');
-        const path = `files/${encodedName}`;
-        // attempt to fetch and render
-        try {
-          const res = await fetch(path);
-          if (!res.ok) throw new Error(`Failed to fetch ${path} (${res.status})`);
-          const mdText = await res.text();
-          await renderMarkdown(mdText, name);
-          // update URL param so user can link to file directly
-          const u = new URL(window.location);
-          u.searchParams.set('src', path);
-          window.history.replaceState({}, '', u);
-        } catch (err) {
-          alert('Could not load file: ' + err.message);
-          console.error(err);
-        }
-      });
-      li.appendChild(a);
-      ul.appendChild(li);
-    });
-    fileListNav.appendChild(ul);
-  }
-
-  // call on init
-  loadFileManifestAndRender();
-
   // Optional: demo initial load (commented)
   // const sample = 'https://raw.githubusercontent.com/simov/markdown-viewer/main/README.md';
   // urlInput.value = sample; loadFromUrl(sample);
 
 })();
-
