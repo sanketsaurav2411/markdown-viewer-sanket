@@ -1,7 +1,3 @@
-// script.js — robust final version using private-use sentinel tokens
-// - Shields code regions, extracts math safely, reinserts as DOM placeholders using textContent,
-//   uses TreeWalker+fallback replacement, then MathJax.typesetPromise([viewer])
-
 (() => {
   // DOM refs (adjust IDs if your HTML differs)
   const viewer = document.getElementById('viewer');
