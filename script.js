@@ -1,191 +1,195 @@
-// script.js — robust loader + marked + MathJax + hljs + mermaid integration
-// Ensures marked is present (with fallback), waits for MathJax, and provides robust file input handling.
+// script.js — final, corrected version
+// - Extract math blocks before markdown-it to preserve LaTeX exactly
+// - Reinsert math as DOM placeholders and set textContent to avoid HTML mangling
+// - Works with: $$..$$, \[..\], [..] (display), \(..\), (\..), [\..] (inline), \begin{env}...\end{env}
+// - Also handles mermaid, highlight.js, TOC, file open/drag-drop, theme toggle, print
 
-(async () => {
-  console.log('[mdv] script starting');
-
-  // --- Configuration ---
-  const MARKED_CDN = 'https://cdn.jsdelivr.net/gh/markedjs/marked@cd535c69875d370aeb0726ecf6c079d7515d24ad/marked.min.js';
-  const MARKED_FALLBACK = 'https://unpkg.com/marked@4.4.0/marked.min.js'; // fallback
-
-  // helper: dynamic script loader
-  function loadScript(src, attrs = {}) {
-    return new Promise((resolve, reject) => {
-      try {
-        const s = document.createElement('script');
-        s.src = src;
-        Object.keys(attrs || {}).forEach(k => s.setAttribute(k, attrs[k]));
-        s.onload = () => { console.log(`[mdv] loaded script ${src}`); resolve(s); };
-        s.onerror = (e) => reject(new Error('Failed to load ' + src));
-        document.head.appendChild(s);
-      } catch (e) { reject(e); }
-    });
-  }
-
-  // ensure `marked` is available
-  async function ensureMarked() {
-    if (window.marked) { console.log('[mdv] marked already present'); return window.marked; }
-    try {
-      await loadScript(MARKED_CDN);
-      if (window.marked) return window.marked;
-    } catch (e) {
-      console.warn('[mdv] primary marked CDN failed, trying fallback', e);
-    }
-    try {
-      await loadScript(MARKED_FALLBACK);
-      if (window.marked) return window.marked;
-    } catch (e) {
-      console.error('[mdv] failed to load marked from fallback', e);
-      throw new Error('marked library not available. Please ensure network or include marked locally.');
-    }
-    if (!window.marked) throw new Error('marked not available after attempted loads.');
-    return window.marked;
-  }
-
-  // wait for MathJax readiness
-  function ensureMathJaxReady(timeoutMs = 15000) {
-    if (window.MathJax && typeof window.MathJax.typesetPromise === 'function') {
-      console.log('[mdv] MathJax already ready');
-      return Promise.resolve(window.MathJax);
-    }
-    const start = Date.now();
-    return new Promise((resolve, reject) => {
-      (function waitLoop() {
-        if (window.MathJax && typeof window.MathJax.typesetPromise === 'function') return resolve(window.MathJax);
-        if (Date.now() - start > timeoutMs) return reject(new Error('MathJax not available after timeout'));
-        setTimeout(waitLoop, 150);
-      })();
-    });
-  }
-
-  // load marked (or bail)
-  try {
-    await ensureMarked();
-  } catch (err) {
-    console.error('[mdv] Fatal: marked missing', err);
-    const viewer = document.getElementById('viewer');
-    if (viewer) viewer.innerHTML = `<pre style="color:crimson">Fatal error: required library <strong>marked</strong> failed to load. Check network or include marked locally.</pre>`;
-    return;
-  }
-
-  // --- DOM references ---
+(() => {
+  // --- DOM refs ---
   const viewer = document.getElementById('viewer');
+  const placeholder = document.getElementById('placeholder');
+  const toc = document.getElementById('toc');
   const fileInput = document.getElementById('fileInput');
   const urlInput = document.getElementById('urlInput');
   const loadUrlBtn = document.getElementById('loadUrlBtn');
   const toggleThemeBtn = document.getElementById('toggleTheme');
   const downloadPdfBtn = document.getElementById('downloadPdf');
-  const toc = document.getElementById('toc');
-  const app = document.querySelector('.app');
+  const scrollTopBtn = document.getElementById('scrollTop');
+  const scrollBottomBtn = document.getElementById('scrollBottom');
 
-  console.log('[mdv] DOM refs', { viewer: !!viewer, fileInput: !!fileInput, urlInput: !!urlInput });
+  // --- markdown-it setup ---
+  const md = window.markdownit({
+    html: true,
+    linkify: true,
+    typographer: true,
+    breaks: true
+  });
 
-  // Theme handling
+  // Optional plugin registration (graceful fallback if not loaded)
+  try { if (window.markdownitEmoji) md.use(window.markdownitEmoji); } catch (e) {}
+  try { if (window.markdownitDeflist) md.use(window.markdownitDeflist); } catch (e) {}
+  try { if (window.markdownitFootnote) md.use(window.markdownitFootnote); } catch (e) {}
+  try { if (window.markdownitMark) md.use(window.markdownitMark); } catch (e) {}
+  try { if (window.markdownitSub) md.use(window.markdownitSub); } catch (e) {}
+  try { if (window.markdownitSup) md.use(window.markdownitSup); } catch (e) {}
+  try { if (window.markdownitTaskLists) md.use(window.markdownitTaskLists, { enabled: true }); } catch (e) {}
+  try { if (window.markdownitAttrs) md.use(window.markdownitAttrs); } catch (e) {}
+  try { if (window.markdownitLinkifyImages) md.use(window.markdownitLinkifyImages); } catch (e) {}
+
+  // --- Theme handling ---
   function setTheme(t) {
-    if (!app) return;
-    app.setAttribute('data-theme', t);
+    if (t === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+    else document.documentElement.removeAttribute('data-theme');
     localStorage.setItem('mdv_theme', t);
   }
   setTheme(localStorage.getItem('mdv_theme') || 'light');
-  toggleThemeBtn && toggleThemeBtn.addEventListener('click', () => setTheme(app.getAttribute('data-theme') === 'dark' ? 'light' : 'dark'));
+  toggleThemeBtn && toggleThemeBtn.addEventListener('click', () => {
+    const current = document.documentElement.hasAttribute('data-theme') ? 'dark' : 'light';
+    setTheme(current === 'dark' ? 'light' : 'dark');
+  });
 
-  // Normalize ambiguous display [ ... ] into \[ ... \]
-  function normalizeDisplay(md) {
-    return md.replace(/(^|\n)[ \t]*\[[ \t]*\n([\s\S]*?)\n[ \t]*\][ \t]*(?=\n|$)/g, (m, lead, inner) => {
-      return lead + '\\[\\n' + inner + '\\n\\]\\n';
-    });
-  }
+  // ---------------- Math extraction & reinsertion helpers ----------------
 
-  // Convert math delimiters to MathJax <script> tags (protect fenced code blocks)
-  function convertMathToScriptTags(md) {
-    let s = md.replace(/\r\n/g, '\n');
+  /**
+   * Extract math blocks and replace with placeholders.
+   * Returns { text: stringWithPlaceholders, math: [{inner, isDisplay}, ...] }
+   */
+  function extractMathBlocks(text) {
+    const math = [];
+    if (!text) return { text: '', math };
 
-    // Temporarily shield fenced code blocks
-    const codeBlocks = [];
-    s = s.replace(/(^|\n)(```[\s\S]*?```)(?=\n|$)/g, function(_, lead, block) {
-      const token = `@@CODEBLOCK_${codeBlocks.length}@@`;
-      codeBlocks.push(block);
-      return lead + token;
-    });
+    // Normalize line endings
+    text = text.replace(/\r\n/g, '\n');
 
-    // \begin{env}...\end{env}
-    s = s.replace(/\\begin\{([a-zA-Z*0-9_\-]+)\}([\s\S]*?)\\end\{\1\}/g, (m) => {
-      return `\n\n<script type="math/tex; mode=display">${m.replace(/<\/script>/g, '&lt;/script>')}</script>\n\n`;
-    });
-
-    // $$ ... $$
-    s = s.replace(/\$\$([\s\S]*?)\$\$/g, (m, inner) => {
-      return `\n\n<script type="math/tex; mode=display">${inner}</script>\n\n`;
-    });
-
-    // \[ ... \]
-    s = s.replace(/\\\[\s*([\s\S]*?)\s*\\\]/g, (m, inner) => {
-      return `\n\n<script type="math/tex; mode=display">${inner}</script>\n\n`;
-    });
-
-    // \( ... \)
-    s = s.replace(/\\\(([\s\S]*?)\\\)/g, (m, inner) => `<script type="math/tex">${inner}</script>`);
-
-    // simple inline $...$ (conservative)
-    s = s.replace(/(^|[^\$])\$([^\n\$][^\$]*?)\$([^\$]|$)/g, (m, a, inner, b) => `${a}<script type="math/tex">${inner}</script>${b}`);
-
-    // bracketed backslash forms [\...], (\...)
-    s = s.replace(/\[\s*(\\[^\]\n]+?)\s*\]/g, (m, inner) => `<script type="math/tex">${inner}</script>`);
-    s = s.replace(/\(\s*(\\[^)\n]+?)\s*\)/g, (m, inner) => `<script type="math/tex">${inner}</script>`);
-
-    // restore code blocks
-    for (let i = 0; i < codeBlocks.length; i++) {
-      s = s.split(`@@CODEBLOCK_${i}@@`).join(codeBlocks[i]);
+    // Helper to store math and return token
+    function store(inner, isDisplay) {
+      const token = `@@MATH_${math.length}@@`;
+      math.push({ inner, isDisplay: !!isDisplay });
+      return token;
     }
 
-    return s;
-  }
-
-  // Build TOC
-  function buildTOC() {
-    if (!toc || !viewer) return;
-    toc.innerHTML = '';
-    const headings = viewer.querySelectorAll('h1,h2,h3,h4,h5,h6');
-    if (!headings.length) { toc.innerHTML = '<div class="muted">No headings</div>'; return; }
-    headings.forEach(h => {
-      if (!h.id) h.id = (h.textContent || '').trim().toLowerCase().replace(/[^\w\- ]+/g, '').replace(/\s+/g, '-');
-      const a = document.createElement('a');
-      a.href = `#${h.id}`;
-      a.textContent = h.textContent;
-      a.style.paddingLeft = `${(parseInt(h.tagName.substring(1)) - 1) * 8}px`;
-      a.addEventListener('click', (e) => { e.preventDefault(); document.getElementById(h.id).scrollIntoView({ behavior: 'smooth' }); });
-      toc.appendChild(a);
+    // 0) Protect \begin{env}...\end{env} (treat as display)
+    // Use a loop to capture nested same env occurrences properly
+    text = text.replace(/\\begin\{([a-zA-Z*0-9_-]+)\}([\s\S]*?)\\end\{\1\}/g, function(_, env, inner) {
+      return store(`\\begin{${env}}${inner}\\end{${env}}`, true);
     });
+
+    // 1) $$ ... $$ (display)
+    text = text.replace(/\$\$([\s\S]*?)\$\$/g, function(_, inner) {
+      return store(inner, true);
+    });
+
+    // 2) \[ ... \] (display) - multi or single line
+    text = text.replace(/\\\[\s*([\s\S]*?)\s*\\\]/g, function(_, inner) {
+      return store(inner, true);
+    });
+
+    // 3) [ ... ] as display when on its own lines:
+    // require that the opening '[' is at start of line (allow spaces) and closing ']' at line end
+    text = text.replace(/(^|\n)[ \t]*\[[ \t]*\n([\s\S]*?)\n[ \t]*\][ \t]*(?=\n|$)/g, function(m, lead, inner) {
+      return lead + store(inner, true);
+    });
+
+    // 4) \(...\) inline standard TeX
+    text = text.replace(/\\\(([\s\S]*?)\\\)/g, function(_, inner) {
+      return store(inner, false);
+    });
+
+    // 5) Inline bracketed LaTeX starting with backslash: [\alpha], [\frac{..}] -> inline
+    text = text.replace(/\[\s*(\\[^\]\n]+?)\s*\]/g, function(_, inner) {
+      return store(inner, false);
+    });
+
+    // 6) Parenthesis-wrapped inline LaTeX when '(' immediately followed by backslash:
+    //    (\bar{x} = ...)
+    text = text.replace(/\(\s*(\\[^)\n]+?)\s*\)/g, function(_, inner) {
+      return store(inner, false);
+    });
+
+    // Return placeholdered text and math array
+    return { text, math };
   }
 
-  // Render pipeline
-  async function renderMarkdown(mdText, sourceLabel) {
+  /**
+   * Reinsert placeholders into HTML string as DOM placeholders:
+   * - display -> <div class="md-math-block" data-math-index="i"></div>
+   * - inline  -> <span class="md-math-inline" data-math-index="i"></span>
+   *
+   * This avoids inserting raw $...$ into HTML where parsing could mangle backslashes.
+   */
+  function reinsertMathIntoHtmlSafely(htmlString, math) {
+    if (!math || !math.length) return htmlString;
+    for (let i = 0; i < math.length; i++) {
+      const token = `@@MATH_${i}@@`;
+      const placeholder = math[i].isDisplay
+        ? `<div class="md-math-block" data-math-index="${i}"></div>`
+        : `<span class="md-math-inline" data-math-index="${i}"></span>`;
+      htmlString = htmlString.split(token).join(placeholder);
+    }
+    return htmlString;
+  }
+
+  /**
+   * Populate the DOM placeholders with exact math text using textContent (preserves backslashes).
+   * This must be called after viewer.innerHTML is set but before MathJax typesetting.
+   */
+  function populateMathPlaceholders(math) {
+    if (!math || !math.length) return;
     try {
-      if (!mdText) mdText = '';
-      mdText = normalizeDisplay(mdText);
-      const withMathScripts = convertMathToScriptTags(mdText);
-
-      // marked options (safe)
-      marked.setOptions({
-        gfm: true,
-        breaks: true,
-        headerIds: true,
-        mangle: false
+      // Inline spans
+      const inlines = viewer.querySelectorAll('span.md-math-inline');
+      inlines.forEach(span => {
+        const idx = Number(span.getAttribute('data-math-index'));
+        if (!Number.isNaN(idx) && math[idx]) {
+          const item = math[idx];
+          span.textContent = `$${item.inner}$`;
+        }
       });
 
-      const html = marked.parse(withMathScripts);
-      if (!viewer) {
-        console.warn('[mdv] no #viewer element found; aborting render');
-        return;
-      }
-      viewer.innerHTML = html;
+      // Block divs
+      const blocks = viewer.querySelectorAll('div.md-math-block');
+      blocks.forEach(div => {
+        const idx = Number(div.getAttribute('data-math-index'));
+        if (!Number.isNaN(idx) && math[idx]) {
+          const item = math[idx];
+          div.textContent = `$$${item.inner}$$`;
+        }
+      });
+    } catch (e) {
+      console.warn('populateMathPlaceholders error', e);
+    }
+  }
 
-      // highlight code
-      document.querySelectorAll('pre code').forEach((el) => {
-        try { hljs.highlightElement(el); } catch (e) { /* ignore */ }
+  // ---------------- Render pipeline ----------------
+  async function renderMarkdown(rawMarkdownText, sourceLabel = '') {
+    try {
+      // 1) Extract math -> placeholders
+      const { text: withPlaceholders, math } = extractMathBlocks(rawMarkdownText || '');
+
+      // 2) Remove UI placeholder if present
+      if (placeholder && placeholder.parentNode) placeholder.parentNode.removeChild(placeholder);
+
+      // 3) Render markdown-it on the placeholdered text
+      const renderedHtml = md.render(withPlaceholders);
+
+      // 4) Replace tokens with DOM placeholders to avoid HTML parsing issues
+      const safeHtml = reinsertMathIntoHtmlSafely(renderedHtml, math);
+
+      // 5) Inject into viewer
+      viewer.innerHTML = safeHtml;
+
+      // 6) Populate placeholders' textContent with exact math strings
+      populateMathPlaceholders(math);
+
+      // 7) Build TOC (headings now exist)
+      buildTOC();
+
+      // 8) Syntax highlight
+      document.querySelectorAll('pre code').forEach(el => {
+        try { hljs.highlightElement(el); } catch (e) {}
       });
 
-      // mermaid
+      // 9) Mermaid rendering: replace mermaid code blocks with divs and init
       try {
         const mermaidBlocks = viewer.querySelectorAll('pre code.language-mermaid, code.language-mermaid');
         mermaidBlocks.forEach(c => {
@@ -201,116 +205,75 @@
           mermaid.initialize({ startOnLoad: false, theme: 'default' });
           mermaid.init(undefined, viewer.querySelectorAll('.mermaid'));
         }
-      } catch (e) { console.warn('[mdv] mermaid error', e); }
-
-      buildTOC();
-
-      // MathJax typeset
-      try {
-        await ensureMathJaxReady();
-        if (window.MathJax && window.MathJax.typesetPromise) {
-          await MathJax.typesetPromise([viewer]);
-        } else {
-          console.warn('[mdv] MathJax not available after wait');
-        }
       } catch (e) {
-        console.warn('[mdv] MathJax typeset error or not ready', e);
+        console.warn('mermaid rendering failed', e);
       }
 
+      // 10) Finally, typeset math with MathJax
+      if (window.MathJax && window.MathJax.typesetPromise) {
+        try {
+          await window.MathJax.typesetPromise();
+        } catch (e) {
+          console.warn('MathJax typesetPromise error', e);
+        }
+      } else {
+        console.warn('MathJax not loaded or typesetPromise unavailable.');
+      }
+
+      // Focus for keyboard scrolling; update title
+      viewer.focus();
       if (sourceLabel) document.title = `${sourceLabel} — Markdown Viewer`;
-      console.log('[mdv] render complete for', sourceLabel || 'inline content');
     } catch (err) {
-      console.error('[mdv] renderMarkdown error', err);
-      if (viewer) viewer.innerHTML = `<pre style="color:crimson">Render error: ${err && err.message ? err.message : err}</pre>`;
+      console.error('Render error', err);
+      viewer.innerHTML = `<pre style="color:crimson">Render error: ${err && err.message ? err.message : err}</pre>`;
     }
   }
 
-  // Load markdown from URL
+  // ---------------- Build TOC ----------------
+  function buildTOC() {
+    if (!toc) return;
+    toc.innerHTML = '';
+    const headings = viewer.querySelectorAll('h1,h2,h3,h4,h5,h6');
+    if (!headings.length) {
+      toc.innerHTML = '<p style="color:var(--muted)">No headings</p>';
+      return;
+    }
+    headings.forEach(h => {
+      if (!h.id) {
+        h.id = (h.textContent || h.innerText).trim().toLowerCase()
+               .replace(/[^\w\- ]+/g,'').replace(/\s+/g,'-');
+      }
+      const a = document.createElement('a');
+      a.href = `#${h.id}`;
+      a.textContent = h.textContent;
+      a.style.paddingLeft = `${(parseInt(h.tagName.substring(1)) - 1) * 8}px`;
+      a.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        document.getElementById(h.id).scrollIntoView({ behavior: 'smooth' });
+      });
+      toc.appendChild(a);
+    });
+  }
+
+  // ---------------- Load from URL ----------------
   async function loadFromUrl(url) {
     try {
       const res = await fetch(url, { mode: 'cors' });
       if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
-      const txt = await res.text();
-      await renderMarkdown(txt, url);
+      const mdText = await res.text();
+      await renderMarkdown(mdText, url);
     } catch (e) {
       alert('Failed to load URL: ' + e.message);
-      console.error('[mdv] loadFromUrl error', e);
+      console.error('loadFromUrl error', e);
     }
   }
 
-  // Robust file input handler (File.text() preferred, FileReader fallback)
-  fileInput && fileInput.addEventListener('change', async (ev) => {
-    try {
-      const f = ev.target && ev.target.files && ev.target.files[0];
-      if (!f) {
-        console.warn('[mdv] No file selected.');
-        return;
-      }
-      console.log('[mdv] Selected file:', f.name, f.type, f.size);
-
-      let text;
-      if (typeof f.text === 'function') {
-        try {
-          text = await f.text();
-        } catch (errText) {
-          console.warn('[mdv] f.text() failed, will try FileReader fallback', errText);
-        }
-      }
-      if (text === undefined) {
-        text = await new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(String(reader.result));
-          reader.onerror = () => reject(new Error('FileReader error'));
-          reader.readAsText(f, 'utf-8');
-        });
-      }
-
-      if (typeof text !== 'string') throw new Error('Read file returned non-string');
-      await renderMarkdown(text, f.name);
-      console.log('[mdv] File rendered:', f.name);
-    } catch (err) {
-      console.error('[mdv] Error reading/opening file:', err);
-      const ph = document.getElementById('placeholder');
-      if (ph) ph.innerHTML = `<div style="color:crimson">Failed to open file: ${err.message}</div>`;
-    }
-  });
-
-  // Drag & drop handlers
-  ['dragenter','dragover'].forEach(evt => window.addEventListener(evt, e => { e.preventDefault(); e.stopPropagation(); }));
-  window.addEventListener('drop', async e => {
-    e.preventDefault(); e.stopPropagation();
-    const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-    if (f) {
-      try {
-        let text;
-        if (typeof f.text === 'function') {
-          text = await f.text();
-        } else {
-          text = await new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(String(reader.result));
-            reader.onerror = () => reject(new Error('FileReader error'));
-            reader.readAsText(f, 'utf-8');
-          });
-        }
-        await renderMarkdown(text, f.name);
-        console.log('[mdv] Drag-drop file rendered:', f.name);
-      } catch (err) {
-        console.error('[mdv] drag-drop read error', err);
-      }
-    }
-  });
-
-  // Wire UI: load URL button
   loadUrlBtn && loadUrlBtn.addEventListener('click', () => {
     const u = urlInput && urlInput.value && urlInput.value.trim();
     if (u) loadFromUrl(u);
   });
 
-  // Print/PDF
-  downloadPdfBtn && downloadPdfBtn.addEventListener('click', () => window.print());
-
-  // Auto load ?src=...
+  // auto-load from ?src=
   const params = new URLSearchParams(location.search);
   if (params.get('src')) {
     const src = params.get('src');
@@ -318,8 +281,43 @@
     loadFromUrl(src);
   }
 
-  // expose for debug
-  window.MDV_renderMarkdown = renderMarkdown;
+  // ---------------- File & Drag/Drop ----------------
+  fileInput && fileInput.addEventListener('change', async (ev) => {
+    const f = ev.target.files && ev.target.files[0];
+    if (!f) return;
+    try {
+      const text = await f.text();
+      await renderMarkdown(text, f.name);
+    } catch (e) {
+      console.error('file read error', e);
+    }
+  });
 
-  console.log('[mdv] script ready');
+  ['dragenter','dragover'].forEach(evt => {
+    window.addEventListener(evt, (e) => { e.preventDefault(); e.stopPropagation(); });
+  });
+  window.addEventListener('drop', async (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) {
+      try {
+        const text = await f.text();
+        await renderMarkdown(text, f.name);
+      } catch (err) {
+        console.error('drop file read error', err);
+      }
+    }
+  });
+
+  // ---------------- Print / Save as PDF ----------------
+  downloadPdfBtn && downloadPdfBtn.addEventListener('click', () => window.print());
+
+  // ---------------- Scroll helpers ----------------
+  scrollTopBtn && scrollTopBtn.addEventListener('click', () => window.scrollTo({ top: 0, behavior: 'smooth' }));
+  scrollBottomBtn && scrollBottomBtn.addEventListener('click', () => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }));
+
+  // Optional: demo initial load (commented)
+  // const sample = 'https://raw.githubusercontent.com/simov/markdown-viewer/main/README.md';
+  // urlInput.value = sample; loadFromUrl(sample);
+
 })();
