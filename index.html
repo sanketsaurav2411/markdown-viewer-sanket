@@ -3,19 +3,15 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Markdown Viewer — Sanket</title>
+  <title>Markdown Viewer (MathJax + marked)</title>
 
-  <!-- Basic styling (you can override in styles.css) -->
+  <!-- Basic styling -->
   <link rel="stylesheet" href="styles.css">
 
-  <!-- highlight.js -->
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css">
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+  <!-- Local marked (must exist in repo root) -->
+  <script src="./marked.min.js"></script>
 
-  <!-- Mermaid -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.4.0/mermaid.min.js"></script>
-
-  <!-- MathJax (v3) -->
+  <!-- MathJax config (must appear before MathJax script) -->
   <script>
     window.MathJax = {
       tex: {
@@ -23,70 +19,56 @@
         displayMath: [['$$','$$'], ['\\[','\\]']],
         packages: {'[+]': ['ams']}
       },
-      options: { skipHtmlTags: ['script','noscript','style','textarea','pre'] },
-      svg: { fontCache: 'global' }
+      options: {
+        // prevent MathJax from scanning inside these tags
+        skipHtmlTags: ['script','noscript','style','textarea','pre','code']
+      },
+      svg: { fontCache: 'global' },
+      startup: { pageReady: () => Promise.resolve() }
     };
   </script>
-  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js" id="MathJax-script" async></script>
 
-  <!-- markdown-it core + plugins from CDN (unpkg) -->
-  <script src="https://unpkg.com/markdown-it/dist/markdown-it.min.js"></script>
-  <script src="https://unpkg.com/markdown-it-emoji/dist/markdown-it-emoji.min.js"></script>
-  <script src="https://unpkg.com/markdown-it-deflist/dist/markdown-it-deflist.min.js"></script>
-  <script src="https://unpkg.com/markdown-it-footnote/dist/markdown-it-footnote.min.js"></script>
-  <script src="https://unpkg.com/markdown-it-mark/dist/markdown-it-mark.min.js"></script>
-  <script src="https://unpkg.com/markdown-it-sub/dist/markdown-it-sub.min.js"></script>
-  <script src="https://unpkg.com/markdown-it-sup/dist/markdown-it-sup.min.js"></script>
-  <script src="https://unpkg.com/markdown-it-task-lists/dist/markdown-it-task-lists.min.js"></script>
-  <script src="https://unpkg.com/markdown-it-attrs/dist/markdown-it-attrs.min.js"></script>
-  <script src="https://unpkg.com/linkify-it/dist/linkify-it.min.js"></script>
-  <script src="https://unpkg.com/markdown-it-linkify-images/dist/markdown-it-linkify-images.min.js"></script>
+  <!-- MathJax (defer is fine) -->
+  <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
 
-  <!-- App script -->
+  <!-- highlight.js -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.8.0/build/styles/default.min.css">
+  <script defer src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.8.0/build/highlight.min.js"></script>
+
+  <!-- mermaid -->
+  <script defer src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+
+  <!-- your script (defer so MathJax + marked present) -->
   <script defer src="script.js"></script>
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">
-      <strong>Markdown Viewer</strong>
-      <small>Sanket</small>
-    </div>
+  <div class="app" data-theme="light">
+    <header>
+      <div class="title">Markdown Viewer (MathJax + marked)</div>
+      <div class="muted" style="margin-left:8px">Render math, mermaid & code</div>
 
-    <div class="controls">
-      <input id="urlInput" type="text" placeholder="Enter raw MD URL (or ?src=...)" />
-      <button id="loadUrlBtn">Load URL</button>
-      <label class="filebtn">
-        Open file
+      <div class="controls" style="margin-left:auto; display:flex; gap:8px; align-items:center;">
+        <input id="urlInput" type="text" placeholder="Raw GitHub URL (raw.githubusercontent.com) or any raw .md url" style="width:420px" />
+        <button id="loadUrlBtn" class="btn">Load URL</button>
         <input id="fileInput" type="file" accept=".md,.markdown,text/markdown" />
-      </label>
-      <button id="toggleTheme">Theme</button>
-      <button id="downloadPdf">Save PDF</button>
+        <button id="toggleTheme" class="btn">Toggle Theme</button>
+        <button id="downloadPdf" class="btn">Print / Save PDF</button>
+      </div>
+    </header>
+
+    <div id="container" style="display:flex; height:calc(100vh - 60px);">
+      <aside id="sidebar" style="width:260px; border-right:1px solid rgba(0,0,0,0.06); padding:12px; overflow:auto; background:var(--card);">
+        <div style="font-weight:600">Contents</div>
+        <div id="toc" class="toc muted">No headings loaded yet</div>
+        <div class="drop-hint" style="margin-top:8px; color:var(--muted); font-size:0.9rem;">Tip: drag & drop a .md file anywhere on the page</div>
+      </aside>
+
+      <main id="main" style="flex:1; overflow:auto; padding:20px;">
+        <div id="viewer" aria-live="polite" style="max-width:900px; margin:0 auto;">
+          Drop a Markdown file or open a raw URL to render.
+        </div>
+      </main>
     </div>
-  </header>
-
-  <main id="main">
-    <aside id="sidebar">
-      <div class="sidebar-section">
-        <h3>Contents</h3>
-        <nav id="toc"></nav>
-      </div>
-      <div class="sidebar-section">
-        <h3>Quick</h3>
-        <button id="scrollTop">Top</button>
-        <button id="scrollBottom">Bottom</button>
-      </div>
-    </aside>
-
-    <article id="viewer" class="markdown-body" tabindex="0">
-      <div id="placeholder" class="placeholder">
-        <p>Drop a Markdown file here, open using <em>Open file</em>, or provide a raw file URL via the input above (e.g., GitHub raw link).</p>
-        <p>Examples: <code>?src=https://raw.githubusercontent.com/username/repo/main/README.md</code></p>
-      </div>
-    </article>
-  </main>
-
-  <footer class="footer">
-    <small>Built for mobile-friendly viewing • MathJax • Mermaid • highlight.js</small>
-  </footer>
+  </div>
 </body>
 </html>
