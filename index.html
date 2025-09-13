@@ -53,11 +53,11 @@
     </div>
 
     <div class="controls">
-      <input id="urlInput" type="text" placeholder="Enter raw MD URL (or ?src=...)" />
+      <input id="urlInput" type="text" placeholder="Enter raw MD URL (or ?src=.)" />
       <button id="loadUrlBtn">Load URL</button>
       <label class="filebtn">
         Open file
-        <input id="fileInput" type="file" accept=".md,.markdown,text/markdown" />
+        <input id="fileInput" type="file" accept=".md,markdown,text/markdown" />
       </label>
       <button id="toggleTheme">Theme</button>
       <button id="downloadPdf">Save PDF</button>
@@ -70,16 +70,26 @@
         <h3>Contents</h3>
         <nav id="toc"></nav>
       </div>
+
+      <div class="sidebar-section">
+        <h3>Files</h3>
+        <nav id="fileList">
+          <p style="color:var(--muted)">Loading files…</p>
+        </nav>
+      </div>
+
       <div class="sidebar-section">
         <h3>Quick</h3>
-        <button id="scrollTop">Top</button>
-        <button id="scrollBottom">Bottom</button>
+        <div class="quick-controls">
+          <button id="scrollTop">Top</button>
+          <button id="scrollBottom">Bottom</button>
+        </div>
       </div>
     </aside>
 
     <article id="viewer" class="markdown-body" tabindex="0">
       <div id="placeholder" class="placeholder">
-        <p>Drop a Markdown file here, open using <em>Open file</em>, or provide a raw file URL via the input above (e.g., GitHub raw link).</p>
+        <p>Drop a Markdown file here, open using <em>Open file</em>, or provide a raw file URL via the input above (e.g. GitHub raw link).</p>
         <p>Examples: <code>?src=https://raw.githubusercontent.com/username/repo/main/README.md</code></p>
       </div>
     </article>

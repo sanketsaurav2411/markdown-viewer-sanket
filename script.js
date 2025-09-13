@@ -16,6 +16,7 @@
   const downloadPdfBtn = document.getElementById('downloadPdf');
   const scrollTopBtn = document.getElementById('scrollTop');
   const scrollBottomBtn = document.getElementById('scrollBottom');
+  const fileListNav = document.getElementById('fileList');
 
   // --- markdown-it setup ---
   const md = window.markdownit({
@@ -69,7 +70,6 @@
     }
 
     // 0) Protect \begin{env}...\end{env} (treat as display)
-    // Use a loop to capture nested same env occurrences properly
     text = text.replace(/\\begin\{([a-zA-Z*0-9_-]+)\}([\s\S]*?)\\end\{\1\}/g, function(_, env, inner) {
       return store(`\\begin{${env}}${inner}\\end{${env}}`, true);
     });
@@ -79,34 +79,31 @@
       return store(inner, true);
     });
 
-    // 2) \[ ... \] (display) - multi or single line
+    // 2) \[ ... \] (display)
     text = text.replace(/\\\[\s*([\s\S]*?)\s*\\\]/g, function(_, inner) {
       return store(inner, true);
     });
 
-    // 3) [ ... ] as display when on its own lines:
-    // require that the opening '[' is at start of line (allow spaces) and closing ']' at line end
+    // 3) [ ... ] as display when on its own lines
     text = text.replace(/(^|\n)[ \t]*\[[ \t]*\n([\s\S]*?)\n[ \t]*\][ \t]*(?=\n|$)/g, function(m, lead, inner) {
       return lead + store(inner, true);
     });
 
-    // 4) \(...\) inline standard TeX
+    // 4) \(...\) inline
     text = text.replace(/\\\(([\s\S]*?)\\\)/g, function(_, inner) {
       return store(inner, false);
     });
 
-    // 5) Inline bracketed LaTeX starting with backslash: [\alpha], [\frac{..}] -> inline
+    // 5) Inline bracketed LaTeX starting with backslash
     text = text.replace(/\[\s*(\\[^\]\n]+?)\s*\]/g, function(_, inner) {
       return store(inner, false);
     });
 
-    // 6) Parenthesis-wrapped inline LaTeX when '(' immediately followed by backslash:
-    //    (\bar{x} = ...)
+    // 6) Parenthesis-wrapped inline LaTeX when '(' immediately followed by backslash
     text = text.replace(/\(\s*(\\[^)\n]+?)\s*\)/g, function(_, inner) {
       return store(inner, false);
     });
 
-    // Return placeholdered text and math array
     return { text, math };
   }
 
@@ -114,8 +111,6 @@
    * Reinsert placeholders into HTML string as DOM placeholders:
    * - display -> <div class="md-math-block" data-math-index="i"></div>
    * - inline  -> <span class="md-math-inline" data-math-index="i"></span>
-   *
-   * This avoids inserting raw $...$ into HTML where parsing could mangle backslashes.
    */
   function reinsertMathIntoHtmlSafely(htmlString, math) {
     if (!math || !math.length) return htmlString;
@@ -136,7 +131,6 @@
   function populateMathPlaceholders(math) {
     if (!math || !math.length) return;
     try {
-      // Inline spans
       const inlines = viewer.querySelectorAll('span.md-math-inline');
       inlines.forEach(span => {
         const idx = Number(span.getAttribute('data-math-index'));
@@ -146,7 +140,6 @@
         }
       });
 
-      // Block divs
       const blocks = viewer.querySelectorAll('div.md-math-block');
       blocks.forEach(div => {
         const idx = Number(div.getAttribute('data-math-index'));
@@ -185,139 +178,4 @@
       buildTOC();
 
       // 8) Syntax highlight
-      document.querySelectorAll('pre code').forEach(el => {
-        try { hljs.highlightElement(el); } catch (e) {}
-      });
-
-      // 9) Mermaid rendering: replace mermaid code blocks with divs and init
-      try {
-        const mermaidBlocks = viewer.querySelectorAll('pre code.language-mermaid, code.language-mermaid');
-        mermaidBlocks.forEach(c => {
-          const txt = c.textContent || c.innerText || '';
-          const d = document.createElement('div');
-          d.className = 'mermaid';
-          d.textContent = txt;
-          const pre = c.closest('pre');
-          if (pre && pre.parentNode) pre.parentNode.replaceChild(d, pre);
-          else if (c.parentNode) c.parentNode.replaceChild(d, c);
-        });
-        if (window.mermaid) {
-          mermaid.initialize({ startOnLoad: false, theme: 'default' });
-          mermaid.init(undefined, viewer.querySelectorAll('.mermaid'));
-        }
-      } catch (e) {
-        console.warn('mermaid rendering failed', e);
-      }
-
-      // 10) Finally, typeset math with MathJax
-      if (window.MathJax && window.MathJax.typesetPromise) {
-        try {
-          await window.MathJax.typesetPromise();
-        } catch (e) {
-          console.warn('MathJax typesetPromise error', e);
-        }
-      } else {
-        console.warn('MathJax not loaded or typesetPromise unavailable.');
-      }
-
-      // Focus for keyboard scrolling; update title
-      viewer.focus();
-      if (sourceLabel) document.title = `${sourceLabel} — Markdown Viewer`;
-    } catch (err) {
-      console.error('Render error', err);
-      viewer.innerHTML = `<pre style="color:crimson">Render error: ${err && err.message ? err.message : err}</pre>`;
-    }
-  }
-
-  // ---------------- Build TOC ----------------
-  function buildTOC() {
-    if (!toc) return;
-    toc.innerHTML = '';
-    const headings = viewer.querySelectorAll('h1,h2,h3,h4,h5,h6');
-    if (!headings.length) {
-      toc.innerHTML = '<p style="color:var(--muted)">No headings</p>';
-      return;
-    }
-    headings.forEach(h => {
-      if (!h.id) {
-        h.id = (h.textContent || h.innerText).trim().toLowerCase()
-               .replace(/[^\w\- ]+/g,'').replace(/\s+/g,'-');
-      }
-      const a = document.createElement('a');
-      a.href = `#${h.id}`;
-      a.textContent = h.textContent;
-      a.style.paddingLeft = `${(parseInt(h.tagName.substring(1)) - 1) * 8}px`;
-      a.addEventListener('click', (ev) => {
-        ev.preventDefault();
-        document.getElementById(h.id).scrollIntoView({ behavior: 'smooth' });
-      });
-      toc.appendChild(a);
-    });
-  }
-
-  // ---------------- Load from URL ----------------
-  async function loadFromUrl(url) {
-    try {
-      const res = await fetch(url, { mode: 'cors' });
-      if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
-      const mdText = await res.text();
-      await renderMarkdown(mdText, url);
-    } catch (e) {
-      alert('Failed to load URL: ' + e.message);
-      console.error('loadFromUrl error', e);
-    }
-  }
-
-  loadUrlBtn && loadUrlBtn.addEventListener('click', () => {
-    const u = urlInput && urlInput.value && urlInput.value.trim();
-    if (u) loadFromUrl(u);
-  });
-
-  // auto-load from ?src=
-  const params = new URLSearchParams(location.search);
-  if (params.get('src')) {
-    const src = params.get('src');
-    if (urlInput) urlInput.value = src;
-    loadFromUrl(src);
-  }
-
-  // ---------------- File & Drag/Drop ----------------
-  fileInput && fileInput.addEventListener('change', async (ev) => {
-    const f = ev.target.files && ev.target.files[0];
-    if (!f) return;
-    try {
-      const text = await f.text();
-      await renderMarkdown(text, f.name);
-    } catch (e) {
-      console.error('file read error', e);
-    }
-  });
-
-  ['dragenter','dragover'].forEach(evt => {
-    window.addEventListener(evt, (e) => { e.preventDefault(); e.stopPropagation(); });
-  });
-  window.addEventListener('drop', async (e) => {
-    e.preventDefault(); e.stopPropagation();
-    const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-    if (f) {
-      try {
-        const text = await f.text();
-        await renderMarkdown(text, f.name);
-      } catch (err) {
-        console.error('drop file read error', err);
-      }
-    }
-  });
-
-  // ---------------- Print / Save as PDF ----------------
-  downloadPdfBtn && downloadPdfBtn.addEventListener('click', () => window.print());
-
-  // ---------------- Scroll helpers ----------------
-  scrollTopBtn && scrollTopBtn.addEventListener('click', () => window.scrollTo({ top: 0, behavior: 'smooth' }));
-  scrollBottomBtn && scrollBottomBtn.addEventListener('click', () => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }));
-
-  // Optional: demo initial load (commented)
-  // const sample = 'https://raw.githubusercontent.com/simov/markdown-viewer/main/README.md';
-  // urlInput.value = sample; loadFromUrl(sample);
-
-})();
+      document.querySelectorAll('pre code').fo

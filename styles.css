@@ -25,6 +25,16 @@ html,body{height:100%; margin:0; font-family: Inter, system-ui, -apple-system, "
 #viewer{flex:1; padding:20px; overflow:auto}
 .placeholder{padding:40px; color:var(--muted); background:transparent; border:2px dashed rgba(0,0,0,0.04); border-radius:8px}
 
+/* File list */
+#fileList ul{list-style:none; padding:0; margin:0}
+#fileList li{margin-bottom:8px}
+#fileList a{color:var(--accent); text-decoration:none; word-break:break-word; display:inline-block; max-width:100%}
+#fileList a:hover{text-decoration:underline}
+
+/* Quick controls inside sidebar */
+.quick-controls{display:flex; gap:8px; margin-top:8px}
+.quick-controls button{background:transparent; color:var(--accent); border:1px solid rgba(0,0,0,0.06); padding:6px 8px; border-radius:6px; cursor:pointer}
+
 /* Markdown styling (basic, extend if you want) */
 .markdown-body{max-width:900px; margin:0 auto}
 .markdown-body h1, .markdown-body h2, .markdown-body h3{margin-top:1.2em}
