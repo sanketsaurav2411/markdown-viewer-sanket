@@ -5,13 +5,13 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Markdown Viewer (MathJax + marked)</title>
 
-  <!-- Basic styling -->
+  <!-- Optional: your styles -->
   <link rel="stylesheet" href="styles.css">
 
-  <!-- Local marked (must exist in repo root) -->
+  <!-- LOCAL marked (must be present in same folder as index.html) -->
   <script src="./marked.min.js"></script>
 
-  <!-- MathJax config (must appear before MathJax script) -->
+  <!-- MathJax config (must appear BEFORE MathJax script) -->
   <script>
     window.MathJax = {
       tex: {
@@ -20,7 +20,6 @@
         packages: {'[+]': ['ams']}
       },
       options: {
-        // prevent MathJax from scanning inside these tags
         skipHtmlTags: ['script','noscript','style','textarea','pre','code']
       },
       svg: { fontCache: 'global' },
@@ -28,7 +27,7 @@
     };
   </script>
 
-  <!-- MathJax (defer is fine) -->
+  <!-- MathJax (deferred) -->
   <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
 
   <!-- highlight.js -->
@@ -38,17 +37,16 @@
   <!-- mermaid -->
   <script defer src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
 
-  <!-- your script (defer so MathJax + marked present) -->
-  <script defer src="script.js"></script>
+  <!-- YOUR script: the extract-then-reinsert script you provided -->
+  <script defer src="./script.js"></script>
 </head>
 <body>
   <div class="app" data-theme="light">
-    <header>
-      <div class="title">Markdown Viewer (MathJax + marked)</div>
-      <div class="muted" style="margin-left:8px">Render math, mermaid & code</div>
-
-      <div class="controls" style="margin-left:auto; display:flex; gap:8px; align-items:center;">
-        <input id="urlInput" type="text" placeholder="Raw GitHub URL (raw.githubusercontent.com) or any raw .md url" style="width:420px" />
+    <header style="display:flex;align-items:center;gap:12px;padding:10px 14px;background:#f7f7f7;">
+      <div style="font-weight:600">Markdown Viewer (MathJax + marked)</div>
+      <div style="color:#666">Render math · mermaid · code</div>
+      <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+        <input id="urlInput" type="text" placeholder="Raw .md URL (raw.githubusercontent.com/...)" style="width:420px;padding:6px;border-radius:6px;border:1px solid #ddd" />
         <button id="loadUrlBtn" class="btn">Load URL</button>
         <input id="fileInput" type="file" accept=".md,.markdown,text/markdown" />
         <button id="toggleTheme" class="btn">Toggle Theme</button>
@@ -56,16 +54,20 @@
       </div>
     </header>
 
-    <div id="container" style="display:flex; height:calc(100vh - 60px);">
-      <aside id="sidebar" style="width:260px; border-right:1px solid rgba(0,0,0,0.06); padding:12px; overflow:auto; background:var(--card);">
-        <div style="font-weight:600">Contents</div>
-        <div id="toc" class="toc muted">No headings loaded yet</div>
-        <div class="drop-hint" style="margin-top:8px; color:var(--muted); font-size:0.9rem;">Tip: drag & drop a .md file anywhere on the page</div>
+    <div id="container" style="display:flex;height:calc(100vh - 60px);">
+      <aside id="sidebar" style="width:260px;border-right:1px solid #eee;padding:12px;overflow:auto;background:#fafafa">
+        <div style="font-weight:600;margin-bottom:6px">Contents</div>
+        <div id="toc" class="toc muted" style="color:#666">No headings loaded yet</div>
+        <div style="margin-top:10px;color:#999;font-size:0.9rem">Tip: drag & drop a .md file anywhere on the page</div>
       </aside>
 
-      <main id="main" style="flex:1; overflow:auto; padding:20px;">
-        <div id="viewer" aria-live="polite" style="max-width:900px; margin:0 auto;">
-          Drop a Markdown file or open a raw URL to render.
+      <main id="main" style="flex:1;overflow:auto;padding:20px;">
+        <!-- placeholder element (script references it) -->
+        <div id="placeholder" style="display:none"></div>
+
+        <!-- viewer where markdown will be injected -->
+        <div id="viewer" aria-live="polite" style="max-width:900px;margin:0 auto;">
+          Drop a Markdown file or enter a raw URL to render.
         </div>
       </main>
     </div>
