@@ -178,4 +178,216 @@
       buildTOC();
 
       // 8) Syntax highlight
-      document.querySelectorAll('pre code').fo
+      document.querySelectorAll('pre code').forEach(el => {
+        try { hljs.highlightElement(el); } catch (e) {}
+      });
+
+      // 9) Mermaid rendering: replace mermaid code blocks with divs and init
+      try {
+        const mermaidBlocks = viewer.querySelectorAll('pre code.language-mermaid, code.language-mermaid');
+        mermaidBlocks.forEach(c => {
+          const txt = c.textContent || c.innerText || '';
+          const d = document.createElement('div');
+          d.className = 'mermaid';
+          d.textContent = txt;
+          const pre = c.closest('pre');
+          if (pre && pre.parentNode) pre.parentNode.replaceChild(d, pre);
+          else if (c.parentNode) c.parentNode.replaceChild(d, c);
+        });
+        if (window.mermaid) {
+          mermaid.initialize({ startOnLoad: false, theme: 'default' });
+          mermaid.init(undefined, viewer.querySelectorAll('.mermaid'));
+        }
+      } catch (e) {
+        console.warn('mermaid rendering failed', e);
+      }
+
+      // 10) Finally, typeset math with MathJax
+      if (window.MathJax && window.MathJax.typesetPromise) {
+        try {
+          await window.MathJax.typesetPromise();
+        } catch (e) {
+          console.warn('MathJax typesetPromise error', e);
+        }
+      }
+
+      // Focus for keyboard scrolling; update title
+      viewer.focus();
+      if (sourceLabel) document.title = `${sourceLabel} — Markdown Viewer`;
+    } catch (err) {
+      console.error('Render error', err);
+      viewer.innerHTML = `<pre style="color:crimson">Render error: ${err && err.message ? err.message : err}</pre>`;
+    }
+  }
+
+  // ---------------- Build TOC ----------------
+  function buildTOC() {
+    if (!toc) return;
+    toc.innerHTML = '';
+    const headings = viewer.querySelectorAll('h1,h2,h3,h4,h5,h6');
+    if (!headings.length) {
+      toc.innerHTML = '<p style="color:var(--muted)">No headings</p>';
+      return;
+    }
+    headings.forEach(h => {
+      if (!h.id) {
+        h.id = (h.textContent || h.innerText).trim().toLowerCase()
+               .replace(/[^\w\- ]+/g,'').replace(/\s+/g,'-');
+      }
+      const a = document.createElement('a');
+      a.href = `#${h.id}`;
+      a.textContent = h.textContent;
+      a.style.paddingLeft = `${(parseInt(h.tagName.substring(1)) - 1) * 8}px`;
+      a.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        document.getElementById(h.id).scrollIntoView({ behavior: 'smooth' });
+      });
+      toc.appendChild(a);
+    });
+  }
+
+  // ---------------- Load from URL ----------------
+  async function loadFromUrl(url) {
+    try {
+      const res = await fetch(url, { mode: 'cors' });
+      if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+      const mdText = await res.text();
+      await renderMarkdown(mdText, url);
+    } catch (e) {
+      alert('Failed to load URL: ' + e.message);
+      console.error('loadFromUrl error', e);
+    }
+  }
+
+  loadUrlBtn && loadUrlBtn.addEventListener('click', () => {
+    const u = urlInput && urlInput.value && urlInput.value.trim();
+    if (u) loadFromUrl(u);
+  });
+
+  // auto-load from ?src=
+  const params = new URLSearchParams(location.search);
+  if (params.get('src')) {
+    const src = params.get('src');
+    if (urlInput) urlInput.value = src;
+    loadFromUrl(src);
+  }
+
+  // ---------------- File & Drag/Drop ----------------
+  fileInput && fileInput.addEventListener('change', async (ev) => {
+    const f = ev.target.files && ev.target.files[0];
+    if (!f) return;
+    try {
+      const text = await f.text();
+      await renderMarkdown(text, f.name);
+    } catch (e) {
+      console.error('file read error', e);
+    }
+  });
+
+  ['dragenter','dragover'].forEach(evt => {
+    window.addEventListener(evt, (e) => { e.preventDefault(); e.stopPropagation(); });
+  });
+  window.addEventListener('drop', async (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) {
+      try {
+        const text = await f.text();
+        await renderMarkdown(text, f.name);
+      } catch (err) {
+        console.error('drop file read error', err);
+      }
+    }
+  });
+
+  // ---------------- Print / Save as PDF ----------------
+  downloadPdfBtn && downloadPdfBtn.addEventListener('click', () => window.print());
+
+  // ---------------- Scroll helpers ----------------
+  scrollTopBtn && scrollTopBtn.addEventListener('click', () => window.scrollTo({ top: 0, behavior: 'smooth' }));
+  scrollBottomBtn && scrollBottomBtn.addEventListener('click', () => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }));
+
+  // ---------------- File list (loads from files/list.json) ----------
+  async function tryFetchJson(url) {
+    try {
+      const r = await fetch(url, {cache: "no-store"});
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return await r.json();
+    } catch (e) {
+      return null;
+    }
+  }
+
+  async function loadFileManifestAndRender() {
+    if (!fileListNav) return;
+    fileListNav.innerHTML = '<p style="color:var(--muted)">Loading files…</p>';
+
+    // use relative paths so it works on GH Pages subpaths
+    const candidates = [
+      'files/list.json',
+      'files/index.json',
+      'files.json',
+      'list.json'
+    ];
+
+    let manifest = null;
+    for (const c of candidates) {
+      manifest = await tryFetchJson(c);
+      if (Array.isArray(manifest)) { break; }
+      manifest = null;
+    }
+
+    if (!manifest || !manifest.length) {
+      fileListNav.innerHTML = '<p style="color:var(--muted)">No file manifest found. Create <code>files/list.json</code> with an array of markdown filenames.</p>';
+      return;
+    }
+
+    // render list
+    fileListNav.innerHTML = '';
+    const ul = document.createElement('ul');
+    ul.style.listStyle = 'none';
+    ul.style.padding = '0';
+    ul.style.margin = '0';
+    manifest.forEach(name => {
+      const li = document.createElement('li');
+      li.style.marginBottom = '6px';
+      const a = document.createElement('a');
+      a.href = '#';
+      a.textContent = name;
+      a.title = `Open ${name}`;
+      a.style.color = 'var(--accent)';
+      a.style.textDecoration = 'none';
+      a.addEventListener('click', async (ev) => {
+        ev.preventDefault();
+        // build path; do not double-encode slashes
+        const encodedName = encodeURIComponent(name).replace(/%2F/g, '/');
+        const path = `files/${encodedName}`;
+        // attempt to fetch and render
+        try {
+          const res = await fetch(path);
+          if (!res.ok) throw new Error(`Failed to fetch ${path} (${res.status})`);
+          const mdText = await res.text();
+          await renderMarkdown(mdText, name);
+          // update URL param so user can link to file directly
+          const u = new URL(window.location);
+          u.searchParams.set('src', path);
+          window.history.replaceState({}, '', u);
+        } catch (err) {
+          alert('Could not load file: ' + err.message);
+          console.error(err);
+        }
+      });
+      li.appendChild(a);
+      ul.appendChild(li);
+    });
+    fileListNav.appendChild(ul);
+  }
+
+  // call on init
+  loadFileManifestAndRender();
+
+  // Optional: demo initial load (commented)
+  // const sample = 'https://raw.githubusercontent.com/simov/markdown-viewer/main/README.md';
+  // urlInput.value = sample; loadFromUrl(sample);
+
+})();
