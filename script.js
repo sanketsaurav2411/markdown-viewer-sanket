@@ -321,3 +321,29 @@
   // urlInput.value = sample; loadFromUrl(sample);
 
 })();
+
+// *** UI toggles: small, safe, non-invasive ***
+(() => {
+  const tocToggle = document.getElementById('tocToggle');
+  const sidebar = document.getElementById('sidebar');
+  const loadUrlBtn = document.getElementById('loadUrlBtn');
+  const urlInput = document.getElementById('urlInput');
+
+  if (tocToggle && sidebar) {
+    tocToggle.addEventListener('click', (e) => {
+      sidebar.classList.toggle('open');
+      e.stopPropagation();
+    });
+    // close on escape
+    document.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape' && sidebar.classList.contains('open')) sidebar.classList.remove('open');
+    });
+  }
+
+  // quick enter => load URL
+  if (urlInput && loadUrlBtn) {
+    urlInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') loadUrlBtn.click();
+    });
+  }
+})();

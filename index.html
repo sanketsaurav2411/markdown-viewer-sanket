@@ -5,17 +5,20 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Markdown Viewer — Sanket</title>
 
-  <!-- Basic styling (you can override in styles.css) -->
+  <!-- Inter font for crisp UI -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&display=swap" rel="stylesheet">
+
+  <!-- Modern styling -->
   <link rel="stylesheet" href="styles.css">
 
-  <!-- highlight.js -->
+  <!-- highlight.js (kept) -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
 
-  <!-- Mermaid -->
+  <!-- Mermaid (kept) -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.4.0/mermaid.min.js"></script>
 
-  <!-- MathJax (v3) -->
+  <!-- MathJax v3 (kept) -->
   <script>
     window.MathJax = {
       tex: {
@@ -29,7 +32,7 @@
   </script>
   <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js" id="MathJax-script" async></script>
 
-  <!-- markdown-it core + plugins from CDN (unpkg) -->
+  <!-- markdown-it + plugins (kept) -->
   <script src="https://unpkg.com/markdown-it/dist/markdown-it.min.js"></script>
   <script src="https://unpkg.com/markdown-it-emoji/dist/markdown-it-emoji.min.js"></script>
   <script src="https://unpkg.com/markdown-it-deflist/dist/markdown-it-deflist.min.js"></script>
@@ -42,38 +45,49 @@
   <script src="https://unpkg.com/linkify-it/dist/linkify-it.min.js"></script>
   <script src="https://unpkg.com/markdown-it-linkify-images/dist/markdown-it-linkify-images.min.js"></script>
 
-  <!-- App script -->
+  <!-- App script (kept, your main render logic) -->
   <script defer src="script.js"></script>
 </head>
 <body>
   <header class="topbar">
     <div class="brand">
-      <strong>Markdown Viewer</strong>
-      <small>Sanket</small>
+      <div class="logo">
+        <!-- small svg logo -->
+        <svg width="36" height="36" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <rect x="2" y="2" width="20" height="20" rx="4" fill="currentColor" opacity="0.08"></rect>
+          <path d="M6 8h12M6 12h12M6 16h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+      <div class="brand-text">
+        <strong>Markdown Viewer</strong>
+        <small>Sanket</small>
+      </div>
     </div>
 
     <div class="controls">
+      <button id="tocToggle" class="icon-btn" aria-label="Toggle contents">☰</button>
       <input id="urlInput" type="text" placeholder="Enter raw MD URL (or ?src=...)" />
-      <button id="loadUrlBtn">Load URL</button>
+      <button id="loadUrlBtn" class="primary">Load</button>
+
       <label class="filebtn">
-        Open file
         <input id="fileInput" type="file" accept=".md,.markdown,text/markdown" />
+        <span class="file-label">Open file</span>
       </label>
-      <button id="toggleTheme">Theme</button>
-      <button id="downloadPdf">Save PDF</button>
+
+      <button id="toggleTheme" class="icon-btn" aria-label="Toggle theme">🌓</button>
+      <button id="downloadPdf" class="icon-btn" aria-label="Save PDF">⤓</button>
     </div>
   </header>
 
   <main id="main">
-    <aside id="sidebar">
-      <div class="sidebar-section">
+    <aside id="sidebar" aria-label="Table of contents">
+      <div class="sidebar-top">
         <h3>Contents</h3>
-        <nav id="toc"></nav>
+        <nav id="toc" class="toc-list" role="navigation"></nav>
       </div>
-      <div class="sidebar-section">
-        <h3>Quick</h3>
-        <button id="scrollTop">Top</button>
-        <button id="scrollBottom">Bottom</button>
+      <div class="sidebar-actions">
+        <button id="scrollTop" class="ghost">Top</button>
+        <button id="scrollBottom" class="ghost">Bottom</button>
       </div>
     </aside>
 
@@ -88,5 +102,24 @@
   <footer class="footer">
     <small>Built for mobile-friendly viewing • MathJax • Mermaid • highlight.js</small>
   </footer>
+
+  <!-- Tiny UI script: minimal and safe — add to the end of script.js alternatively -->
+  <script>
+    // This is a small fallback UI if script.js UI toggle wasn't loaded yet.
+    (function(){
+      const tocToggle = document.getElementById('tocToggle');
+      const sidebar = document.getElementById('sidebar');
+      if (!tocToggle || !sidebar) return;
+      tocToggle.addEventListener('click', () => {
+        sidebar.classList.toggle('open');
+      });
+      // Close sidebar on click outside (mobile-friendly)
+      document.addEventListener('click', (e) => {
+        if (!sidebar.classList.contains('open')) return;
+        const inside = sidebar.contains(e.target) || tocToggle.contains(e.target);
+        if (!inside) sidebar.classList.remove('open');
+      });
+    })();
+  </script>
 </body>
 </html>
